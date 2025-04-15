@@ -224,7 +224,7 @@ void is_ready(bool skipCorruptCheck)
 
 	Threads.set(std::max(threads_num,1));
 #else
-	Threads.set(size_t(Options["Threads"]));
+	Threads.set(size_t(Options["Threads"])); // isreadyを2回叩くとここでSEGVが発生する
 #endif
 
 #if defined (USE_EVAL_HASH)

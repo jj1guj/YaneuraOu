@@ -49,6 +49,7 @@ namespace Book
 		// これで書き出されるとちょっと嫌なので一時的にfalseにしておく。
 		auto original_ignore_book_ply = (bool)Options["IgnoreBookPly"];
 		Options["IgnoreBookPly"] = false;
+		Options["BookOnTheFly"] = std::string("false");
 
 		Tools::ProgressBar::enable(true);
 		SCOPE_EXIT(
