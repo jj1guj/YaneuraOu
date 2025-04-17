@@ -295,6 +295,17 @@ namespace Book
 			unordered_set<string> thinking_sfens;
 
 			// 各行の局面をparseして読み込む(このときに重複除去も行なう)
+			// ループ内でvectorの確保を繰り返し行うと以下のいずれかの原因によりメモリリークが発生するため1度だけ確保し使い回すようにする
+			//  1) vectorの確保を行う事に新しいメモリ領域が確保され、使用済みのvectorのメモリ領域が解放されない
+			//  2) メモリの断片化が発生し、何らかのメモリ再配置や拡張が発生
+			vector<Move> m;				// 初手から(moves+1)手までの指し手格納用
+			// is_validは、この局面を処理対象とするかどうかのフラグ
+			// 処理対象としない局面でもとりあえずsfにpush_back()はしていく。(indexの番号が狂うため)
+			typedef pair<string, bool /*is_valid*/> SfenAndBool;
+			vector<SfenAndBool> sf;		// 初手から(moves+0)手までのsfen文字列格納用
+			// これより長い棋譜、食わせない＆思考対象としないやろ
+			std::vector<StateInfo> states(1024);
+
 			for (size_t k = 0; k < sfens.size(); ++k)
 			{
 				// sfenを取り出す(普通のsfen文字列とは限らない。"startpos"から書かれているかも)
@@ -363,15 +374,13 @@ namespace Book
 				if (hirate)
 					pos.set_hirate(&state,Threads.main());
 
-				vector<Move> m;				// 初手から(moves+1)手までの指し手格納用
+				m.clear();				// 初手から(moves+1)手までの指し手格納用
 
-				// is_validは、この局面を処理対象とするかどうかのフラグ
-				// 処理対象としない局面でもとりあえずsfにpush_back()はしていく。(indexの番号が狂うため)
-				typedef pair<string, bool /*is_valid*/> SfenAndBool;
-				vector<SfenAndBool> sf;		// 初手から(moves+0)手までのsfen文字列格納用
+				sf.clear();		// 初手から(moves+0)手までのsfen文字列格納用
 
 				// これより長い棋譜、食わせない＆思考対象としないやろ
-				std::vector<StateInfo> states(1024);
+				for (size_t idx = 0; idx < 1024; ++idx)
+					states[idx] = StateInfo();
 
 				// 変数sfに解析対象局面としてpush_backする。
 				// ただし、
