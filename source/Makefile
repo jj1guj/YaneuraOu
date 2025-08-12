@@ -582,6 +582,9 @@ else ifeq ($(TARGET_CPU),ZEN2)
 else ifeq ($(TARGET_CPU),ZEN3)
 	CPPFLAGS += -DUSE_AVX2 -DUSE_BMI2 -mbmi -mbmi2 -mavx2 -march=znver3
 
+else ifeq ($(TARGET_CPU),ZEN5)
+	CPPFLAGS += -DUSE_AVX512 -DUSE_BMI2 -DUSE_VNNI -mbmi -mbmi2 -mavx512f -march=znver5
+
 # それ以外は、AVX512,AVX2,SSE4.2,SSE4.1,SSE2のように利用できるCPU拡張命令で振り分ける。
 # AVX2より上位のCPUなら普通は(Intel系なら)BMI2命令を使ったほうが速いので"USE_BMI2"を指定しておく。
 
