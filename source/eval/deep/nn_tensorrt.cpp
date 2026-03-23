@@ -2,6 +2,7 @@
 
 #if defined(YANEURAOU_ENGINE_DEEP) && defined (TENSOR_RT)
 
+#include <cmath>
 #include <regex>
 #include "unpack.cuh"
 //#include "dlshogi_types.h"
@@ -46,7 +47,7 @@ namespace {
 		}
 	} gLogger;
 
-	constexpr long long int operator"" _MiB(long long unsigned int val)
+	constexpr long long int operator""_MiB(long long unsigned int val)
 	{
 		return val * (1 << 20);
 	}
