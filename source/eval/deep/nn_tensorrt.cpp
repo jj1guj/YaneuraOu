@@ -143,13 +143,12 @@ namespace Eval::dlshogi
 			FatalError("createInferBuilder");
 		}
 
-		// TRT 10.0 以降、kEXPLICIT_BATCH は削除された。
-		// kSTRONGLY_TYPED を使用することで TRT の自動精度変換（TF32, FP16 等）を防ぎ、
-		// ONNX モデルに記述された型定義(FP32)に従って正確に推論を行う。
-		// これにより TRT 26.02 以降で生じる推論精度の劣化を防ぐ。
+		// TRT 10.0 以降、kEXPLICIT_BATCH は削除され Explicit Batch がデフォルトになった。
+		// createNetworkV2(0) で TRT 10+ のデフォルト動作を使用する。
+		// kSTRONGLY_TYPED は TRT 10.15 以降でカーネル選択の挙動が変わり推論精度が
+		// 劣化することがあるため使用しない。精度制御は clearFlag(kTF32) 等で行う。
 #if NV_TENSORRT_MAJOR >= 10
-		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(
-			1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED)));
+		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0));
 #else
 		const auto explicitBatch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
 		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(explicitBatch));
@@ -374,7 +373,7 @@ namespace Eval::dlshogi
 		// シリアライズされたファイルを生成する。
 		sync_cout << "info string TensorRT : build the model file." << sync_endl;
 #if NV_TENSORRT_MAJOR >= 10
-		sync_cout << "info string TensorRT build mode : kSTRONGLY_TYPED (FP32, TRT10+)" << sync_endl;
+		sync_cout << "info string TensorRT build mode : FP32, no TF32 (TRT10+)" << sync_endl;
 #else
 		sync_cout << "info string TensorRT build mode : FP16 (TRT8/9)" << sync_endl;
 #endif
