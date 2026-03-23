@@ -280,6 +280,14 @@ namespace Eval::dlshogi
 		config->addOptimizationProfile(profile);
 		config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 64_MiB);
 
+#if NV_TENSORRT_MAJOR >= 10
+		// TRT 10.7+ でアグレッシブな operator fusion/tactic selection に起因する
+		// 数値ズレが報告されている。BuilderOptimizationLevel=0 は最低限の最適化のみ
+		// 行うため、fusion バグによる推論誤りを回避できる場合がある。
+		// 正常に動作することが確認できたら、このフラグを外して性能を優先してよい。
+		config->setBuilderOptimizationLevel(0);
+#endif
+
 		// TensorRT 8 より nvinfer1::IBuilder::buildSerializedNetwork() が追加され、 nvinfer1::IBuilder::buildEngineWithConfig() は非推奨となった。
 		// nvinfer1::IBuilder::buildEngineWithConfig() は TensorRT 10.0 にて削除される見込み。
 		// https://docs.nvidia.com/deeplearning/tensorrt/api/c_api/deprecated.html
@@ -435,28 +443,21 @@ namespace Eval::dlshogi
 		checkCudaErrors(cudaStreamSynchronize(cudaStreamPerThread));
 
 #if defined(DEBUG_NN_FORWARD)
-		// 初回のみ推論結果の統計を出力してデバッグに使う。
-		static bool debug_printed = false;
-		if (!debug_printed) {
-			debug_printed = true;
-			// policy (batch 0)
+		// 最初の 3 回の forward 結果を出力する。
+		// エンジンテスト(zero input)と実際のゲームの両方を見るため 3 回としている。
+		// -ffast-math では isnan/isinf や sum の集約が信頼できないため、
+		// 先頭 10 値を直接表示する。
+		static int debug_call_count = 0;
+		if (debug_call_count < 3) {
+			++debug_call_count;
 			const float* p = reinterpret_cast<const float*>(y1[0]);
-			float p_min = p[0], p_max = p[0], p_sum = 0.0f;
-			int p_argmax = 0;
-			bool p_has_nan = false, p_has_inf = false;
-			for (int i = 0; i < (int)(MAX_MOVE_LABEL_NUM * SQ_NB); ++i) {
-				if (std::isnan(p[i])) p_has_nan = true;
-				if (std::isinf(p[i])) p_has_inf = true;
-				if (p[i] < p_min) p_min = p[i];
-				if (p[i] > p_max) { p_max = p[i]; p_argmax = i; }
-				p_sum += p[i];
-			}
-			// value (batch 0)
-			const float vval = *reinterpret_cast<const float*>(&y2[0]);
-			sync_cout << "info string [DEBUG forward] batch_size=" << batch_size
-				<< " policy[0]: min=" << p_min << " max=" << p_max
-				<< " argmax=" << p_argmax << " sum=" << p_sum
-				<< " nan=" << p_has_nan << " inf=" << p_has_inf
+			const float  vval = *reinterpret_cast<const float*>(&y2[0]);
+			sync_cout << "info string [DEBUG forward #" << debug_call_count
+				<< "] batch_size=" << batch_size
+				<< " policy[0..9]:";
+			for (int i = 0; i < 10; ++i)
+				sync_cout << " " << p[i];
+			sync_cout << " ... policy[2186]=" << p[2186]
 				<< " | value[0]=" << vval
 				<< sync_endl;
 		}
