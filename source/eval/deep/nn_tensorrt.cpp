@@ -209,6 +209,12 @@ namespace Eval::dlshogi
 		}
 #endif
 
+		// TF32 (TensorFloat-32) は TRT 8.4+ でデフォルト有効。
+		// TF32 は FP32 の仮数部を 23bit → 10bit に削減した演算精度であり、
+		// 同一入力に対して TRT バージョン間で推論結果が異なる原因になりうる。
+		// 純粋な FP32 精度を確保するために無効化する。
+		config->clearFlag(nvinfer1::BuilderFlag::kTF32);
+
 #if defined(TRT_NN_FP16)
 		network->getInput(0)->setType(nvinfer1::DataType::kHALF);
 		network->getInput(1)->setType(nvinfer1::DataType::kHALF);
