@@ -142,10 +142,13 @@ namespace Eval::dlshogi
 			FatalError("createInferBuilder");
 		}
 
-		// TRT 10.0 以降、kEXPLICIT_BATCH は no-op (deprecated)。
-		// TRT 10 では createNetworkV2(0) が推奨。
+		// TRT 10.0 以降、kEXPLICIT_BATCH は削除された。
+		// kSTRONGLY_TYPED を使用することで TRT の自動精度変換（TF32, FP16 等）を防ぎ、
+		// ONNX モデルに記述された型定義(FP32)に従って正確に推論を行う。
+		// これにより TRT 26.02 以降で生じる推論精度の劣化を防ぐ。
 #if NV_TENSORRT_MAJOR >= 10
-		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0));
+		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(
+			1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kSTRONGLY_TYPED)));
 #else
 		const auto explicitBatch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
 		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(explicitBatch));
@@ -196,16 +199,14 @@ namespace Eval::dlshogi
 		}
 		else
 #endif
+		// kSTRONGLY_TYPED モードでは型はモデル定義(FP32)に固定されるため、
+		// TRT 10+ では FP16 フラグは不要。TRT 8/9 のみ FP16 を有効化する。
+#if NV_TENSORRT_MAJOR < 10
 		if (builder->platformHasFastFp16())
 		{
-			// TRT 10+ では kFP16 を有効にすると softmax 等が FP16 で計算されて
-			// 確率分布が歪み推論結果が劣化するため、FP16 モードを無効にする。
-			// (TRT 8/9 では問題なかったが TRT 10.x で再現する)
-			// パフォーマンスを優先する場合は ENABLE_RYFAMATE_PATCH を使用すること。
-#if NV_TENSORRT_MAJOR < 10
 			config->setFlag(nvinfer1::BuilderFlag::kFP16);
-#endif
 		}
+#endif
 
 #if defined(TRT_NN_FP16)
 		network->getInput(0)->setType(nvinfer1::DataType::kHALF);
