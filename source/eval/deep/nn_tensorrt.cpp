@@ -435,22 +435,28 @@ namespace Eval::dlshogi
 		checkCudaErrors(cudaStreamSynchronize(cudaStreamPerThread));
 
 #if defined(DEBUG_NN_FORWARD)
-		// 最初の 3 回の forward 結果を出力する。
-		// エンジンテスト(zero input)と実際のゲームの両方を見るため 3 回としている。
+		// 最初の 10 回の forward 結果を出力する。
+		// isready のエンジンテスト(ゼロ入力)の後に実際の対局推論も捕捉するため 10 回としている。
 		// sync_cout はデッドロック回避のため、文字列を先に構築してから一度だけ出力する。
 		static int debug_call_count = 0;
-		if (debug_call_count < 3) {
+		if (debug_call_count < 10) {
 			++debug_call_count;
-			const float* p   = reinterpret_cast<const float*>(y1[0]);
+			const float* p    = reinterpret_cast<const float*>(y1[0]);
 			const float  vval = *reinterpret_cast<const float*>(&y2[0]);
+			// 入力パックバッファの先頭 4 バイトを確認（全ゼロなら入力が届いていない）
+			const uint8_t* p1b = reinterpret_cast<const uint8_t*>(p1);
 			std::string msg = "info string [DEBUG forward #"
 				+ std::to_string(debug_call_count)
 				+ "] batch_size=" + std::to_string(batch_size)
-				+ " policy[0..9]:";
-			for (int i = 0; i < 10; ++i)
+				+ " p1[0..3]="
+				+ std::to_string((int)p1b[0]) + " "
+				+ std::to_string((int)p1b[1]) + " "
+				+ std::to_string((int)p1b[2]) + " "
+				+ std::to_string((int)p1b[3])
+				+ " policy[0..4]:";
+			for (int i = 0; i < 5; ++i)
 				msg += " " + std::to_string(p[i]);
-			msg += " ... policy[2186]=" + std::to_string(p[2186])
-				+ " | value[0]=" + std::to_string(vval);
+			msg += " | value[0]=" + std::to_string(vval);
 			sync_cout << msg << sync_endl;
 		}
 #endif
