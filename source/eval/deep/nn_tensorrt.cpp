@@ -432,6 +432,34 @@ namespace Eval::dlshogi
 		checkCudaErrors(cudaMemcpyAsync(y1, y1_dev, sizeof(NN_Output_Policy) * batch_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
 		checkCudaErrors(cudaMemcpyAsync(y2, y2_dev, sizeof(NN_Output_Value ) * batch_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
 		checkCudaErrors(cudaStreamSynchronize(cudaStreamPerThread));
+
+#if defined(DEBUG_NN_FORWARD)
+		// 初回のみ推論結果の統計を出力してデバッグに使う。
+		static bool debug_printed = false;
+		if (!debug_printed) {
+			debug_printed = true;
+			// policy (batch 0)
+			const float* p = reinterpret_cast<const float*>(y1[0]);
+			float p_min = p[0], p_max = p[0], p_sum = 0.0f;
+			int p_argmax = 0;
+			bool p_has_nan = false, p_has_inf = false;
+			for (int i = 0; i < (int)(MAX_MOVE_LABEL_NUM * SQ_NB); ++i) {
+				if (std::isnan(p[i])) p_has_nan = true;
+				if (std::isinf(p[i])) p_has_inf = true;
+				if (p[i] < p_min) p_min = p[i];
+				if (p[i] > p_max) { p_max = p[i]; p_argmax = i; }
+				p_sum += p[i];
+			}
+			// value (batch 0)
+			const float vval = *reinterpret_cast<const float*>(&y2[0]);
+			sync_cout << "info string [DEBUG forward] batch_size=" << batch_size
+				<< " policy[0]: min=" << p_min << " max=" << p_max
+				<< " argmax=" << p_argmax << " sum=" << p_sum
+				<< " nan=" << p_has_nan << " inf=" << p_has_inf
+				<< " | value[0]=" << vval
+				<< sync_endl;
+		}
+#endif
 	}
 
 } // namespace Eval::dlshogi
