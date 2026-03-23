@@ -198,17 +198,12 @@ namespace Eval::dlshogi
 #endif
 		if (builder->platformHasFastFp16())
 		{
+			// TRT 10+ では kFP16 を有効にすると softmax 等が FP16 で計算されて
+			// 確率分布が歪み推論結果が劣化するため、FP16 モードを無効にする。
+			// (TRT 8/9 では問題なかったが TRT 10.x で再現する)
+			// パフォーマンスを優先する場合は ENABLE_RYFAMATE_PATCH を使用すること。
+#if NV_TENSORRT_MAJOR < 10
 			config->setFlag(nvinfer1::BuilderFlag::kFP16);
-			// TRT 10.x では kFP16 のみ指定すると TRT が裁量で積極的に FP16 を適用し、
-			// softmax や出力層が FP16 で計算されて確率分布が歪み推論結果が劣化する。
-			// kPREFER_PRECISION_CONSTRAINTS + 全レイヤー FP32 指定により、
-			// FP16 ハードウェアへのスケジューリングを許可しつつ計算精度を FP32 に維持する。
-#if NV_TENSORRT_MAJOR >= 10
-			config->setFlag(nvinfer1::BuilderFlag::kPREFER_PRECISION_CONSTRAINTS);
-			for (int i = 0; i < network->getNbLayers(); ++i)
-			{
-				network->getLayer(i)->setPrecision(nvinfer1::DataType::kFLOAT);
-			}
 #endif
 		}
 
