@@ -199,12 +199,16 @@ namespace Eval::dlshogi
 		}
 		else
 #endif
-		// プラットフォームが FP16 をサポートする場合は有効化する。
-		// TRT 10.x でも FP16 フラグは有効に機能する。
+		// TRT 10+ では FP16 を使わず純粋な FP32 で推論する。
+		// FP16 は TRT 10.7 以前では問題ないが、ONNX Runtime (CPU) の参照値と
+		// 照合すると FP16 の精度劣化が推論結果を大きく変えることが確認されている。
+		// TRT 8/9 は従来通り FP16 を有効化する。
+#if NV_TENSORRT_MAJOR < 10
 		if (builder->platformHasFastFp16())
 		{
 			config->setFlag(nvinfer1::BuilderFlag::kFP16);
 		}
+#endif
 
 		// TF32 (TensorFloat-32) は TRT 8.4+ でデフォルト有効。
 		// TF32 は FP32 の仮数部を 23bit → 10bit に削減した演算精度であり、
@@ -439,27 +443,33 @@ namespace Eval::dlshogi
 
 #if defined(DEBUG_NN_FORWARD)
 		// 最初の 10 回の forward 結果を出力する。
-		// isready のエンジンテスト(ゼロ入力)の後に実際の対局推論も捕捉するため 10 回としている。
+		// isready のエンジンテスト(ゼロ入力)4回 + 実際の対局局面を捕捉するため 10 回としている。
 		// sync_cout はデッドロック回避のため、文字列を先に構築してから一度だけ出力する。
 		static int debug_call_count = 0;
 		if (debug_call_count < 10) {
 			++debug_call_count;
-			const float* p    = reinterpret_cast<const float*>(y1[0]);
+			const float* p0   = reinterpret_cast<const float*>(y1[0]);
 			const float  vval = *reinterpret_cast<const float*>(&y2[0]);
-			// 入力パックバッファの先頭 4 バイトを確認（全ゼロなら入力が届いていない）
 			const uint8_t* p1b = reinterpret_cast<const uint8_t*>(p1);
 			std::string msg = "info string [DEBUG forward #"
 				+ std::to_string(debug_call_count)
-				+ "] batch_size=" + std::to_string(batch_size)
+				+ "] batch=" + std::to_string(batch_size)
 				+ " p1[0..3]="
 				+ std::to_string((int)p1b[0]) + " "
 				+ std::to_string((int)p1b[1]) + " "
 				+ std::to_string((int)p1b[2]) + " "
 				+ std::to_string((int)p1b[3])
-				+ " policy[0..4]:";
+				+ " y1[0][0..4]:";
 			for (int i = 0; i < 5; ++i)
-				msg += " " + std::to_string(p[i]);
-			msg += " | value[0]=" + std::to_string(vval);
+				msg += " " + std::to_string(p0[i]);
+			// バッチ2番目の局面も表示（ゼロ入力でなければ異なる値になるはず）
+			if (batch_size > 1) {
+				const float* p1v = reinterpret_cast<const float*>(y1[1]);
+				msg += " | y1[1][0..4]:";
+				for (int i = 0; i < 5; ++i)
+					msg += " " + std::to_string(p1v[i]);
+			}
+			msg += " | v[0]=" + std::to_string(vval);
 			sync_cout << msg << sync_endl;
 		}
 #endif
