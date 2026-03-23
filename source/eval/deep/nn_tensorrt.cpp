@@ -427,6 +427,34 @@ namespace Eval::dlshogi
 		checkCudaErrors(cudaMemcpyAsync(p2_dev, p2, sizeof(PType) * ((batch_size * ((int)MAX_FEATURES2_NUM) + 7) >> 3), cudaMemcpyHostToDevice, cudaStreamPerThread));
 		unpack_features1(batch_size, p1_dev, (DType*)x1_dev, cudaStreamPerThread);
 		unpack_features2(batch_size, p2_dev, (DType*)x2_dev, cudaStreamPerThread);
+#if defined(DEBUG_NN_FORWARD)
+		// enqueueV3の前にx1_devを確認：カーネルが正しく書いているか？
+		static int dbg_pre_count = 0;
+		if (dbg_pre_count < 10) {
+			++dbg_pre_count;
+			checkCudaErrors(cudaStreamSynchronize(cudaStreamPerThread));
+			// カーネル起動エラーの確認
+			cudaError_t kerr = cudaGetLastError();
+			// p1_dev の先頭 4 バイトを確認
+			uint8_t dbg_p1dev[4] = {};
+			checkCudaErrors(cudaMemcpy(dbg_p1dev, p1_dev, 4, cudaMemcpyDeviceToHost));
+			// x1_dev の先頭 10 floats を確認（enqueue前）
+			float dbg_x1pre[10] = {};
+			checkCudaErrors(cudaMemcpy(dbg_x1pre, x1_dev, sizeof(float)*10, cudaMemcpyDeviceToHost));
+			std::string pmsg = "info string [DEBUG pre-enqueue #"
+				+ std::to_string(dbg_pre_count)
+				+ "] kernel_err=" + std::string(cudaGetErrorString(kerr))
+				+ " p1_dev[0..3]="
+				+ std::to_string((int)dbg_p1dev[0]) + " "
+				+ std::to_string((int)dbg_p1dev[1]) + " "
+				+ std::to_string((int)dbg_p1dev[2]) + " "
+				+ std::to_string((int)dbg_p1dev[3])
+				+ " x1_dev_pre[0..9]:";
+			for (int i = 0; i < 10; ++i)
+				pmsg += " " + std::to_string(dbg_x1pre[i]);
+			sync_cout << pmsg << sync_endl;
+		}
+#endif
 #else
 		checkCudaErrors(cudaMemcpyAsync(x1_dev, x1, sizeof(NN_Input1) * batch_size, cudaMemcpyHostToDevice, cudaStreamPerThread));
 		checkCudaErrors(cudaMemcpyAsync(x2_dev, x2, sizeof(NN_Input2) * batch_size, cudaMemcpyHostToDevice, cudaStreamPerThread));
