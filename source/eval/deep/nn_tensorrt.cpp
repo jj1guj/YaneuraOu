@@ -199,14 +199,12 @@ namespace Eval::dlshogi
 		}
 		else
 #endif
-		// kSTRONGLY_TYPED モードでは型はモデル定義(FP32)に固定されるため、
-		// TRT 10+ では FP16 フラグは不要。TRT 8/9 のみ FP16 を有効化する。
-#if NV_TENSORRT_MAJOR < 10
+		// プラットフォームが FP16 をサポートする場合は有効化する。
+		// TRT 10.x でも FP16 フラグは有効に機能する。
 		if (builder->platformHasFastFp16())
 		{
 			config->setFlag(nvinfer1::BuilderFlag::kFP16);
 		}
-#endif
 
 		// TF32 (TensorFloat-32) は TRT 8.4+ でデフォルト有効。
 		// TF32 は FP32 の仮数部を 23bit → 10bit に削減した演算精度であり、
