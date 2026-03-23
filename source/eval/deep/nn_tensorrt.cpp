@@ -280,14 +280,6 @@ namespace Eval::dlshogi
 		config->addOptimizationProfile(profile);
 		config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 64_MiB);
 
-#if NV_TENSORRT_MAJOR >= 10
-		// TRT 10.7+ でアグレッシブな operator fusion/tactic selection に起因する
-		// 数値ズレが報告されている。BuilderOptimizationLevel=0 は最低限の最適化のみ
-		// 行うため、fusion バグによる推論誤りを回避できる場合がある。
-		// 正常に動作することが確認できたら、このフラグを外して性能を優先してよい。
-		config->setBuilderOptimizationLevel(0);
-#endif
-
 		// TensorRT 8 より nvinfer1::IBuilder::buildSerializedNetwork() が追加され、 nvinfer1::IBuilder::buildEngineWithConfig() は非推奨となった。
 		// nvinfer1::IBuilder::buildEngineWithConfig() は TensorRT 10.0 にて削除される見込み。
 		// https://docs.nvidia.com/deeplearning/tensorrt/api/c_api/deprecated.html
@@ -445,21 +437,21 @@ namespace Eval::dlshogi
 #if defined(DEBUG_NN_FORWARD)
 		// 最初の 3 回の forward 結果を出力する。
 		// エンジンテスト(zero input)と実際のゲームの両方を見るため 3 回としている。
-		// -ffast-math では isnan/isinf や sum の集約が信頼できないため、
-		// 先頭 10 値を直接表示する。
+		// sync_cout はデッドロック回避のため、文字列を先に構築してから一度だけ出力する。
 		static int debug_call_count = 0;
 		if (debug_call_count < 3) {
 			++debug_call_count;
-			const float* p = reinterpret_cast<const float*>(y1[0]);
+			const float* p   = reinterpret_cast<const float*>(y1[0]);
 			const float  vval = *reinterpret_cast<const float*>(&y2[0]);
-			sync_cout << "info string [DEBUG forward #" << debug_call_count
-				<< "] batch_size=" << batch_size
-				<< " policy[0..9]:";
+			std::string msg = "info string [DEBUG forward #"
+				+ std::to_string(debug_call_count)
+				+ "] batch_size=" + std::to_string(batch_size)
+				+ " policy[0..9]:";
 			for (int i = 0; i < 10; ++i)
-				sync_cout << " " << p[i];
-			sync_cout << " ... policy[2186]=" << p[2186]
-				<< " | value[0]=" << vval
-				<< sync_endl;
+				msg += " " + std::to_string(p[i]);
+			msg += " ... policy[2186]=" + std::to_string(p[2186])
+				+ " | value[0]=" + std::to_string(vval);
+			sync_cout << msg << sync_endl;
 		}
 #endif
 	}
