@@ -117,7 +117,12 @@ PYTHON = python
 
 # 標準的なコンパイルオプション (standard compile options)
 CPPFLAGS      = -std=c++17 -fno-exceptions -fno-rtti -Wextra -MMD -MP -fpermissive
-NVCC_CPPFLAGS = -std=c++17 -x cu -maxrregcount=0 --machine 64 --compile -cudart static -DNDEBUG -Xcompiler "-Ofast"
+# NVCC_ARCH: CUDA GPU architecture for native CUBIN generation (avoids PTX JIT incompatibility).
+# -gencode arch=compute_XX,code=sm_XX generates native CUBIN, bypassing PTX JIT at runtime.
+# sm_89 = RTX 4090 (Ada Lovelace), sm_86 = RTX 3090 (Ampere), sm_80 = A100.
+# Override via: make NVCC_ARCH="-gencode=arch=compute_86,code=sm_86"
+NVCC_ARCH ?= -gencode=arch=compute_89,code=sm_89
+NVCC_CPPFLAGS = -std=c++17 -x cu -maxrregcount=0 --machine 64 --compile -cudart static -DNDEBUG -Xcompiler "-Ofast" $(NVCC_ARCH)
 WCPPFLAGS     =
 LDFLAGS       = 
 LIBS          =
