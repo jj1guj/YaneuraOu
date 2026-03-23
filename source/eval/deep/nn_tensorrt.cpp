@@ -32,7 +32,13 @@ namespace {
 			default: ASSERT(false);         return "";
 			}
 		}
+		// TRT 10.x から引数型が AsciiChar const* に変更された。
+		// AsciiChar は char の typedef なので const char* と互換。
+#if NV_TENSORRT_MAJOR >= 10
+		void log(Severity severity, nvinfer1::AsciiChar const* msg) noexcept override
+#else
 		void log(Severity severity, const char* msg) noexcept
+#endif
 		{
 			if (severity == Severity::kINTERNAL_ERROR) {
 				std::cerr << error_type(severity) << msg << std::endl;
@@ -136,8 +142,14 @@ namespace Eval::dlshogi
 			FatalError("createInferBuilder");
 		}
 
+		// TRT 10.0 以降、kEXPLICIT_BATCH は no-op (deprecated)。
+		// TRT 10 では createNetworkV2(0) が推奨。
+#if NV_TENSORRT_MAJOR >= 10
+		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0));
+#else
 		const auto explicitBatch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
 		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(explicitBatch));
+#endif
 		if (!network)
 		{
 			FatalError("createNetworkV2");
@@ -187,6 +199,17 @@ namespace Eval::dlshogi
 		if (builder->platformHasFastFp16())
 		{
 			config->setFlag(nvinfer1::BuilderFlag::kFP16);
+			// TRT 10.x では kFP16 のみ指定すると TRT が裁量で積極的に FP16 を適用し、
+			// softmax や出力層が FP16 で計算されて確率分布が歪み推論結果が劣化する。
+			// kPREFER_PRECISION_CONSTRAINTS + 全レイヤー FP32 指定により、
+			// FP16 ハードウェアへのスケジューリングを許可しつつ計算精度を FP32 に維持する。
+#if NV_TENSORRT_MAJOR >= 10
+			config->setFlag(nvinfer1::BuilderFlag::kPREFER_PRECISION_CONSTRAINTS);
+			for (int i = 0; i < network->getNbLayers(); ++i)
+			{
+				network->getLayer(i)->setPrecision(nvinfer1::DataType::kFLOAT);
+			}
+#endif
 		}
 
 #if defined(TRT_NN_FP16)
