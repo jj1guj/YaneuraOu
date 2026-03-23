@@ -364,8 +364,13 @@ namespace Eval::dlshogi
 		if (!infer_engine)
 		{
 			// 初回のみビルドが必要。
-			// シリアライズされたファイルを生成する。
-			sync_cout << "info string TensorRT : build the model file." << sync_endl;
+		// シリアライズされたファイルを生成する。
+		sync_cout << "info string TensorRT : build the model file." << sync_endl;
+#if NV_TENSORRT_MAJOR >= 10
+		sync_cout << "info string TensorRT build mode : kSTRONGLY_TYPED (FP32, TRT10+)" << sync_endl;
+#else
+		sync_cout << "info string TensorRT build mode : FP16 (TRT8/9)" << sync_endl;
+#endif
 
 			build(filename);
 
