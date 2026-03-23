@@ -40,7 +40,7 @@ namespace {
 		void log(Severity severity, const char* msg) noexcept
 #endif
 		{
-			if (severity == Severity::kINTERNAL_ERROR) {
+			if (severity <= Severity::kWARNING) {
 				std::cerr << error_type(severity) << msg << std::endl;
 			}
 		}
