@@ -2,7 +2,6 @@
 
 #if defined(YANEURAOU_ENGINE_DEEP) && defined (TENSOR_RT)
 
-#include <cmath>
 #include <regex>
 #include "unpack.cuh"
 //#include "dlshogi_types.h"
@@ -33,21 +32,15 @@ namespace {
 			default: ASSERT(false);         return "";
 			}
 		}
-		// TRT 10.x から引数型が AsciiChar const* に変更された。
-		// AsciiChar は char の typedef なので const char* と互換。
-#if NV_TENSORRT_MAJOR >= 10
-		void log(Severity severity, nvinfer1::AsciiChar const* msg) noexcept override
-#else
 		void log(Severity severity, const char* msg) noexcept
-#endif
 		{
-			if (severity <= Severity::kWARNING) {
+			if (severity == Severity::kINTERNAL_ERROR) {
 				std::cerr << error_type(severity) << msg << std::endl;
 			}
 		}
 	} gLogger;
 
-	constexpr long long int operator""_MiB(long long unsigned int val)
+	constexpr long long int operator"" _MiB(long long unsigned int val)
 	{
 		return val * (1 << 20);
 	}
@@ -143,16 +136,8 @@ namespace Eval::dlshogi
 			FatalError("createInferBuilder");
 		}
 
-		// TRT 10.0 以降、kEXPLICIT_BATCH は削除され Explicit Batch がデフォルトになった。
-		// createNetworkV2(0) で TRT 10+ のデフォルト動作を使用する。
-		// kSTRONGLY_TYPED は TRT 10.15 以降でカーネル選択の挙動が変わり推論精度が
-		// 劣化することがあるため使用しない。精度制御は clearFlag(kTF32) 等で行う。
-#if NV_TENSORRT_MAJOR >= 10
-		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0));
-#else
 		const auto explicitBatch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
 		auto network = InferUniquePtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(explicitBatch));
-#endif
 		if (!network)
 		{
 			FatalError("createNetworkV2");
@@ -199,22 +184,10 @@ namespace Eval::dlshogi
 		}
 		else
 #endif
-		// TRT 10+ では FP16 を使わず純粋な FP32 で推論する。
-		// FP16 は TRT 10.7 以前では問題ないが、ONNX Runtime (CPU) の参照値と
-		// 照合すると FP16 の精度劣化が推論結果を大きく変えることが確認されている。
-		// TRT 8/9 は従来通り FP16 を有効化する。
-#if NV_TENSORRT_MAJOR < 10
 		if (builder->platformHasFastFp16())
 		{
 			config->setFlag(nvinfer1::BuilderFlag::kFP16);
 		}
-#endif
-
-		// TF32 (TensorFloat-32) は TRT 8.4+ でデフォルト有効。
-		// TF32 は FP32 の仮数部を 23bit → 10bit に削減した演算精度であり、
-		// 同一入力に対して TRT バージョン間で推論結果が異なる原因になりうる。
-		// 純粋な FP32 精度を確保するために無効化する。
-		config->clearFlag(nvinfer1::BuilderFlag::kTF32);
 
 #if defined(TRT_NN_FP16)
 		network->getInput(0)->setType(nvinfer1::DataType::kHALF);
@@ -372,13 +345,8 @@ namespace Eval::dlshogi
 		if (!infer_engine)
 		{
 			// 初回のみビルドが必要。
-		// シリアライズされたファイルを生成する。
-		sync_cout << "info string TensorRT : build the model file." << sync_endl;
-#if NV_TENSORRT_MAJOR >= 10
-		sync_cout << "info string TensorRT build mode : FP32, no TF32 (TRT10+)" << sync_endl;
-#else
-		sync_cout << "info string TensorRT build mode : FP16 (TRT8/9)" << sync_endl;
-#endif
+			// シリアライズされたファイルを生成する。
+			sync_cout << "info string TensorRT : build the model file." << sync_endl;
 
 			build(filename);
 
@@ -427,34 +395,6 @@ namespace Eval::dlshogi
 		checkCudaErrors(cudaMemcpyAsync(p2_dev, p2, sizeof(PType) * ((batch_size * ((int)MAX_FEATURES2_NUM) + 7) >> 3), cudaMemcpyHostToDevice, cudaStreamPerThread));
 		unpack_features1(batch_size, p1_dev, (DType*)x1_dev, cudaStreamPerThread);
 		unpack_features2(batch_size, p2_dev, (DType*)x2_dev, cudaStreamPerThread);
-#if defined(DEBUG_NN_FORWARD)
-		// enqueueV3の前にx1_devを確認：カーネルが正しく書いているか？
-		static int dbg_pre_count = 0;
-		if (dbg_pre_count < 10) {
-			++dbg_pre_count;
-			checkCudaErrors(cudaStreamSynchronize(cudaStreamPerThread));
-			// カーネル起動エラーの確認
-			cudaError_t kerr = cudaGetLastError();
-			// p1_dev の先頭 4 バイトを確認
-			uint8_t dbg_p1dev[4] = {};
-			checkCudaErrors(cudaMemcpy(dbg_p1dev, p1_dev, 4, cudaMemcpyDeviceToHost));
-			// x1_dev の先頭 10 floats を確認（enqueue前）
-			float dbg_x1pre[10] = {};
-			checkCudaErrors(cudaMemcpy(dbg_x1pre, x1_dev, sizeof(float)*10, cudaMemcpyDeviceToHost));
-			std::string pmsg = "info string [DEBUG pre-enqueue #"
-				+ std::to_string(dbg_pre_count)
-				+ "] kernel_err=" + std::string(cudaGetErrorString(kerr))
-				+ " p1_dev[0..3]="
-				+ std::to_string((int)dbg_p1dev[0]) + " "
-				+ std::to_string((int)dbg_p1dev[1]) + " "
-				+ std::to_string((int)dbg_p1dev[2]) + " "
-				+ std::to_string((int)dbg_p1dev[3])
-				+ " x1_dev_pre[0..9]:";
-			for (int i = 0; i < 10; ++i)
-				pmsg += " " + std::to_string(dbg_x1pre[i]);
-			sync_cout << pmsg << sync_endl;
-		}
-#endif
 #else
 		checkCudaErrors(cudaMemcpyAsync(x1_dev, x1, sizeof(NN_Input1) * batch_size, cudaMemcpyHostToDevice, cudaStreamPerThread));
 		checkCudaErrors(cudaMemcpyAsync(x2_dev, x2, sizeof(NN_Input2) * batch_size, cudaMemcpyHostToDevice, cudaStreamPerThread));
@@ -468,47 +408,6 @@ namespace Eval::dlshogi
 		checkCudaErrors(cudaMemcpyAsync(y1, y1_dev, sizeof(NN_Output_Policy) * batch_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
 		checkCudaErrors(cudaMemcpyAsync(y2, y2_dev, sizeof(NN_Output_Value ) * batch_size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
 		checkCudaErrors(cudaStreamSynchronize(cudaStreamPerThread));
-
-#if defined(DEBUG_NN_FORWARD)
-		// 最初の 10 回の forward 結果を出力する。
-		// x1_dev の内容を同期コピーで確認し、unpack カーネルが正しく動作しているかを診断する。
-		static int debug_call_count = 0;
-		if (debug_call_count < 10) {
-			++debug_call_count;
-			const float* p0   = reinterpret_cast<const float*>(y1[0]);
-			const float  vval = *reinterpret_cast<const float*>(&y2[0]);
-			const uint8_t* p1b = reinterpret_cast<const uint8_t*>(p1);
-
-			// x1_dev の先頭 10 要素をデバイスから同期コピーして確認
-			// （cudaStreamPerThread の完了を待ってから読む）
-			float dbg_x1[10] = {};
-			checkCudaErrors(cudaStreamSynchronize(cudaStreamPerThread));
-			checkCudaErrors(cudaMemcpy(dbg_x1, x1_dev, sizeof(float) * 10, cudaMemcpyDeviceToHost));
-
-			std::string msg = "info string [DEBUG forward #"
-				+ std::to_string(debug_call_count)
-				+ "] batch=" + std::to_string(batch_size)
-				+ " p1[0..3]="
-				+ std::to_string((int)p1b[0]) + " "
-				+ std::to_string((int)p1b[1]) + " "
-				+ std::to_string((int)p1b[2]) + " "
-				+ std::to_string((int)p1b[3])
-				+ " x1_dev[0..9]:";
-			for (int i = 0; i < 10; ++i)
-				msg += " " + std::to_string(dbg_x1[i]);
-			msg += " | y1[0][0..4]:";
-			for (int i = 0; i < 5; ++i)
-				msg += " " + std::to_string(p0[i]);
-			if (batch_size > 1) {
-				const float* p1v = reinterpret_cast<const float*>(y1[1]);
-				msg += " | y1[1][0..4]:";
-				for (int i = 0; i < 5; ++i)
-					msg += " " + std::to_string(p1v[i]);
-			}
-			msg += " | v[0]=" + std::to_string(vval);
-			sync_cout << msg << sync_endl;
-		}
-#endif
 	}
 
 } // namespace Eval::dlshogi
