@@ -443,14 +443,20 @@ namespace Eval::dlshogi
 
 #if defined(DEBUG_NN_FORWARD)
 		// 最初の 10 回の forward 結果を出力する。
-		// isready のエンジンテスト(ゼロ入力)4回 + 実際の対局局面を捕捉するため 10 回としている。
-		// sync_cout はデッドロック回避のため、文字列を先に構築してから一度だけ出力する。
+		// x1_dev の内容を同期コピーで確認し、unpack カーネルが正しく動作しているかを診断する。
 		static int debug_call_count = 0;
 		if (debug_call_count < 10) {
 			++debug_call_count;
 			const float* p0   = reinterpret_cast<const float*>(y1[0]);
 			const float  vval = *reinterpret_cast<const float*>(&y2[0]);
 			const uint8_t* p1b = reinterpret_cast<const uint8_t*>(p1);
+
+			// x1_dev の先頭 10 要素をデバイスから同期コピーして確認
+			// （cudaStreamPerThread の完了を待ってから読む）
+			float dbg_x1[10] = {};
+			checkCudaErrors(cudaStreamSynchronize(cudaStreamPerThread));
+			checkCudaErrors(cudaMemcpy(dbg_x1, x1_dev, sizeof(float) * 10, cudaMemcpyDeviceToHost));
+
 			std::string msg = "info string [DEBUG forward #"
 				+ std::to_string(debug_call_count)
 				+ "] batch=" + std::to_string(batch_size)
@@ -459,10 +465,12 @@ namespace Eval::dlshogi
 				+ std::to_string((int)p1b[1]) + " "
 				+ std::to_string((int)p1b[2]) + " "
 				+ std::to_string((int)p1b[3])
-				+ " y1[0][0..4]:";
+				+ " x1_dev[0..9]:";
+			for (int i = 0; i < 10; ++i)
+				msg += " " + std::to_string(dbg_x1[i]);
+			msg += " | y1[0][0..4]:";
 			for (int i = 0; i < 5; ++i)
 				msg += " " + std::to_string(p0[i]);
-			// バッチ2番目の局面も表示（ゼロ入力でなければ異なる値になるはず）
 			if (batch_size > 1) {
 				const float* p1v = reinterpret_cast<const float*>(y1[1]);
 				msg += " | y1[1][0..4]:";
