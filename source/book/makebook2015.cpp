@@ -130,7 +130,7 @@ namespace Book
 		bool convert_from_apery = token == "convert_from_apery";
 		// 定跡の変換
 		bool convert_to_apery = token == "convert_to_apery";
-		
+
 		// いずれのコマンドでもないなら、このtokenのコマンドを自分は処理できない。
 		if (!(from_sfen || from_thinking || book_merge || book_sort || convert_from_apery || convert_to_apery))
 			return 0;
@@ -588,8 +588,8 @@ namespace Book
 			u64 same_nodes = 0;
 			u64 diffrent_nodes1 = 0, diffrent_nodes2 = 0;
 
-			// 1) 探索が深いほうを採用。
-			// 2) 同じ探索深さであれば、MultiPVの大きいほうを採用。
+			// 同じ候補手がある場合は第一引数(book0)の評価値を優先する。
+			// book1(book[1])にしかない候補手はそのまま補完する。
 			book[0].foreach([&](string sfen, BookMovesPtr it0)
 				{
 					// このエントリーがbook1のほうにないかを調べる。
@@ -598,22 +598,20 @@ namespace Book
 					{
 						same_nodes++;
 
-						// あったので、良いほうをbook2に突っ込む。
-						// 1) 登録されている候補手の数がゼロならこれは無効なのでもう片方を登録
-						// 2) depthが深いほう
-						// 3) depthが同じならmulti pvが大きいほう(登録されている候補手が多いほう)
+						// あったので、指し手単位でマージする。
+						// 1) 登録されている候補手の数がゼロならもう片方を登録
+						// 2) そうでなければbook0(第一引数)の指し手を優先して登録し、
+						//    book1にしかない指し手を上書きなしで追加する。
 						if (it0->size() == 0)
 							book[2].append(sfen, it1);
-						else if (it1->size() == 0)
+						else {
 							book[2].append(sfen, it0);
-						else if ((*it0)[0].depth > (*it1)[0].depth)
-							book[2].append(sfen, it0);
-						else if ((*it0)[0].depth < (*it1)[0].depth)
-							book[2].append(sfen, it1);
-						else if (it0->size() >= it1->size())
-							book[2].append(sfen, it0);
-						else
-							book[2].append(sfen, it1);
+							it1->foreach([&](BookMove& bm)
+								{
+									// overwrite=false: book0に同じ指し手があれば上書きしない
+									book[2].insert(sfen, bm, false);
+								});
+						}
 					}
 					else {
 						// なかったので無条件でbook2に突っ込む。
