@@ -12,6 +12,7 @@
 #include "apery_book.h"
 
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <iomanip>		// std::setprecision()
 #include <numeric>      // std::accumulate()
@@ -588,47 +589,80 @@ namespace Book
 			u64 same_nodes = 0;
 			u64 diffrent_nodes1 = 0, diffrent_nodes2 = 0;
 
-			// 同じ候補手がある場合は第一引数(book0)の評価値を優先する。
-			// book1(book[1])にしかない候補手はそのまま補完する。
-			book[0].foreach([&](string sfen, BookMovesPtr it0)
-				{
-					// このエントリーがbook1のほうにないかを調べる。
-					auto it1 = book[1].find(sfen);
-					if (it1 != nullptr)
-					{
-						same_nodes++;
+			struct MergeEntry {
+				string sfen;
+				BookMovesPtr moves;
+			};
 
-						// あったので、指し手単位でマージする。
-						// 1) 登録されている候補手の数がゼロならもう片方を登録
-						// 2) そうでなければbook0(第一引数)の指し手を優先して登録し、
-						//    book1にしかない指し手を上書きなしで追加する。
-						if (it0->size() == 0)
-							book[2].append(sfen, it1);
-						else {
-							book[2].append(sfen, it0);
-							it1->foreach([&](BookMove& bm)
-								{
-									// overwrite=false: book0に同じ指し手があれば上書きしない
-									book[2].insert(sfen, bm, false);
-								});
-						}
-					}
-					else {
-						// なかったので無条件でbook2に突っ込む。
-						book[2].append(sfen, it0);
-						diffrent_nodes1++;
-					}
-				});
+			auto make_key = [&](const string& sfen) {
+				return StringExtension::trim_number(sfen);
+			};
 
-			// book0の精査が終わったので、book1側で、まだ突っ込んでいないnodeを探して、それをbook2に突っ込む
-			book[1].foreach([&](string sfen, BookMovesPtr it1)
+			auto get_ply = [&](const string& sfen) {
+				auto left = StringExtension::trim_number(sfen);
+				return StringExtension::to_int(sfen.substr(left.length()), 0);
+			};
+
+			auto clone_moves = [&](const BookMovesPtr src) {
+				return BookMovesPtr(new BookMoves(*src));
+			};
+
+			auto upsert_entry = [&](unordered_map<string, MergeEntry>& m, const string& sfen, const BookMovesPtr src) {
+				auto key = make_key(sfen);
+				auto it = m.find(key);
+				if (it == m.end())
 				{
-					if (book[2].find(sfen) == nullptr)
+					m[key] = MergeEntry{ sfen, clone_moves(src) };
+					return;
+				}
+
+				if (get_ply(sfen) < get_ply(it->second.sfen))
+					it->second.sfen = sfen;
+
+				src->foreach([&](BookMove& bm)
 					{
-						book[2].append(sfen, it1);
-						diffrent_nodes2++;
-					}
-				});
+						it->second.moves->insert(bm, false);
+					});
+			};
+
+			unordered_map<string, MergeEntry> entries0, entries1;
+			book[0].foreach([&](string sfen, BookMovesPtr it0) { upsert_entry(entries0, sfen, it0); });
+			book[1].foreach([&](string sfen, BookMovesPtr it1) { upsert_entry(entries1, sfen, it1); });
+
+			for (auto& kv : entries0)
+			{
+				auto& key = kv.first;
+				auto& e0 = kv.second;
+				auto it1 = entries1.find(key);
+
+				if (it1 != entries1.end())
+				{
+					same_nodes++;
+
+					// 同じ候補手はbook0(第一引数)を優先し、book1にしかない手を追加。
+					auto merged = clone_moves(e0.moves);
+					it1->second.moves->foreach([&](BookMove& bm)
+						{
+							merged->insert(bm, false);
+						});
+
+					auto out_sfen = get_ply(e0.sfen) <= get_ply(it1->second.sfen) ? e0.sfen : it1->second.sfen;
+					book[2].append(out_sfen, merged);
+				}
+				else {
+					book[2].append(e0.sfen, e0.moves);
+					diffrent_nodes1++;
+				}
+			}
+
+			for (auto& kv : entries1)
+			{
+				if (entries0.find(kv.first) == entries0.end())
+				{
+					book[2].append(kv.second.sfen, kv.second.moves);
+					diffrent_nodes2++;
+				}
+			}
 
 			cout << "..done" << endl;
 
