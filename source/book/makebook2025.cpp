@@ -12,9 +12,9 @@
 
 // コマンド例)
 //    makebook petashock book1.db user_book1.db
-// 
+//
 // book1.dbをmin-max探索してuser_book1.dbを書き出す。
-// 
+//
 // エンジンオプションのFlippedBookがtrueなら、先手番の局面しか書き出さない。(後手番の局面はそれをflipした局面が書き出されているはずだから)
 //
 /*
@@ -45,6 +45,9 @@
 #include <utility> // For std::forward
 #include <new>
 #include <stdexcept>
+#include <chrono>
+#include <thread>
+#include <atomic>
 
 #include "book.h"
 #include "../thread.h"
@@ -378,32 +381,60 @@ namespace MakeBook2025
 		// 定跡をペタショック化する。
 		void make_book(Position& pos, istringstream& is)
 		{
+			auto total_start = std::chrono::steady_clock::now();
+			auto phase_start = total_start;
+			auto phase_end   = total_start;
+
 			// 初期化等
 			initialize(is);
 
 			// ペタショック化する定跡ファイルの読み込み
+			phase_start = std::chrono::steady_clock::now();
 			read_book();
+			phase_end = std::chrono::steady_clock::now();
+			cout << "[TIME] read_book           : " << std::chrono::duration_cast<std::chrono::milliseconds>(phase_end - phase_start).count() / 1000.0 << " sec" << endl;
 
 			// 局面の合流チェック
+			phase_start = std::chrono::steady_clock::now();
 			convergence_check();
+			phase_end = std::chrono::steady_clock::now();
+			cout << "[TIME] convergence_check   : " << std::chrono::duration_cast<std::chrono::milliseconds>(phase_end - phase_start).count() / 1000.0 << " sec" << endl;
 
 			// 後退解析その1 : 出次数0の局面を定跡ツリーから削除
+			phase_start = std::chrono::steady_clock::now();
 			remove_const_nodes();
+			phase_end = std::chrono::steady_clock::now();
+			cout << "[TIME] remove_const_nodes  : " << std::chrono::duration_cast<std::chrono::milliseconds>(phase_end - phase_start).count() / 1000.0 << " sec" << endl;
 
 			// 後退解析その2 : 連続王手の千日手のループを抽出
+			phase_start = std::chrono::steady_clock::now();
 			extract_check_loop();
+			phase_end = std::chrono::steady_clock::now();
+			cout << "[TIME] extract_check_loop  : " << std::chrono::duration_cast<std::chrono::milliseconds>(phase_end - phase_start).count() / 1000.0 << " sec" << endl;
 
 			// 千日手スコアで各ノードを初期化する。
+			phase_start = std::chrono::steady_clock::now();
 			init_cycle_nodes();
+			phase_end = std::chrono::steady_clock::now();
+			cout << "[TIME] init_cycle_nodes    : " << std::chrono::duration_cast<std::chrono::milliseconds>(phase_end - phase_start).count() / 1000.0 << " sec" << endl;
 
 			// 後退解析その3 : 評価値の親ノードへの伝播
+			phase_start = std::chrono::steady_clock::now();
 			propagate_all_nodes();
+			phase_end = std::chrono::steady_clock::now();
+			cout << "[TIME] propagate_all_nodes : " << std::chrono::duration_cast<std::chrono::milliseconds>(phase_end - phase_start).count() / 1000.0 << " sec" << endl;
 
 			// ペタショック化した定跡の書き出し
+			phase_start = std::chrono::steady_clock::now();
 			write_peta_shock_book(writebook_path, book_nodes);
+			phase_end = std::chrono::steady_clock::now();
+			cout << "[TIME] write_peta_shock    : " << std::chrono::duration_cast<std::chrono::milliseconds>(phase_end - phase_start).count() / 1000.0 << " sec" << endl;
 
 			// 結果出力
 			output_result();
+
+			auto total_end = std::chrono::steady_clock::now();
+			cout << "[TIME] TOTAL               : " << std::chrono::duration_cast<std::chrono::milliseconds>(total_end - total_start).count() / 1000.0 << " sec" << endl;
 		}
 
 	protected:
@@ -655,25 +686,21 @@ namespace MakeBook2025
 			if (!fast)
 				sfen_reader.Open(sfen_temp_path);
 
+			const size_t thread_num = Options.count("Threads") ? size_t(Options["Threads"]) : size_t(1);
+
 			Tools::ProgressBar progress;
 			progress.reset(book_nodes.size() - 1);
-
-			Position pos;
 
 			// note : ここ、スレッド並列にして高速化すべきだが、
 			//  テンポラリファイルにsfen文字列を書き出してしまっているのでそれができない。
 			//  ⇨  fastオプションが指定されている時はその限りではないか..
 
-			for (BookNodeIndex i = 0; i < BookNodeIndex(book_nodes.size()); ++i)
+			auto process_node = [&](BookNodeIndex i, const string& sfen_src, Position& pos, u64& local_converged)
 			{
 				auto& book_node = book_nodes[i];
 
-				StateInfo si, si2;
-				string sfen;
-				if (fast)
-					sfen = original_sfens[i];
-				else
-					sfen_reader.ReadLine(sfen);
+				StateInfo si;
+				string sfen = sfen_src;
 
 				// この局面が後手番なら、sfenを先手の局面化する。
 				// 💡: BookNodeは先手の局面で考えている。hashkeyは後手の局面で考えている。
@@ -706,7 +733,7 @@ namespace MakeBook2025
 						// これは(定跡DBにはなかった指し手で進めたら既知の局面に)合流したということだから
 						// 合流カウンターをインクリメントしておく。
 						if (std::find_if(book_moves.begin(), book_moves.end(), [&](const auto& bm) { return bm.move == move16; }) == book_moves.end())
-							converged_moves++;
+							local_converged++;
 
 						book_node.moves.emplace_back(book_move);
 					}
@@ -729,10 +756,61 @@ namespace MakeBook2025
 						// 登録されてなかったので登録する。(登録されていればどうせmin-max探索によって値が上書きされるので元の定跡ファイルの評価値は反映させなくて良い。)
 						book_node.moves.emplace_back(book_move);
 				}
+			};
 
-				progress.check(i);
+			if (fast && thread_num > 1)
+			{
+				std::atomic<BookNodeIndex> next_index(0);
+				std::atomic<u64> converged_total(0);
+
+				vector<std::thread> workers;
+				workers.reserve(thread_num);
+
+				for (size_t t = 0; t < thread_num; ++t)
+				{
+					workers.emplace_back([&, t]() {
+						Position pos;
+						u64 local_converged = 0;
+
+						while (true)
+						{
+							BookNodeIndex i = next_index.fetch_add(1);
+							if (i >= BookNodeIndex(book_nodes.size()))
+								break;
+
+							process_node(i, original_sfens[i], pos, local_converged);
+						}
+
+						converged_total.fetch_add(local_converged);
+					});
+				}
+
+				for (auto& th : workers)
+					th.join();
+
+				converged_moves += converged_total.load();
+				progress.check(book_nodes.size() - 1);
 			}
-			if (fast)
+			else
+			{
+				Position pos;
+				for (BookNodeIndex i = 0; i < BookNodeIndex(book_nodes.size()); ++i)
+				{
+					string sfen;
+					if (fast)
+						sfen = original_sfens[i];
+					else
+						sfen_reader.ReadLine(sfen);
+
+					u64 local_converged = 0;
+					process_node(i, sfen, pos, local_converged);
+					converged_moves += local_converged;
+
+					progress.check(i);
+				}
+			}
+
+			if (!fast)
 				sfen_reader.Close();
 
 			//cout << "converged_moves : " << converged_moves << endl;
@@ -904,7 +982,7 @@ namespace MakeBook2025
 			//   あるnode Aがcheck_loopだとする。
 			//   この2手先にcheck_loopであるnodeがなければ、node Aはcheck loopではない。
 			//   そこで、このようにしてcheck loop集合から取り除いていき、取り除けないようになった残りがcheck loop集合の王手されている局面。
-			// 
+			//
 			//   ここで得られたcheck loop集合を数珠つなぎにしたものが、check loop集合。
 
 			Tools::ProgressBar progress;
@@ -963,7 +1041,7 @@ namespace MakeBook2025
 			check_loop_counter = check_loop_nodes_set.size();
 
 			// check_loop_nodesの局面を数珠つなぎにする。
-			// 
+			//
 			// 📒 アルゴリズム
 			// check_loop上の局面の2手先の局面がcheck_loop上の局面であるなら、この間にある局面もcheck_loop上の局面である。
 
@@ -1053,7 +1131,7 @@ namespace MakeBook2025
 		}
 
 		// 各ノードのbestvalueを親ノードに伝播させる。
-		// 
+		//
 		// 返し値
 		//   今回更新されたノード数。
 		u64 propagate_all_nodes_once()
@@ -1374,7 +1452,7 @@ namespace Book
 		if (token == "peta_shock") {
 
 			// ペタショックコマンド
-			// 
+			//
 			// やねうら王の定跡ファイルに対して定跡ツリー上でmin-max探索を行い、その結果を別の定跡ファイルに書き出す。
 			//   makebook peta_shock book.db user_book1.db
 			// 　⇨　先手か後手か、片側の局面しか書き出さない。エンジンオプションの FlippedBook を必ずオンにして用いること。
