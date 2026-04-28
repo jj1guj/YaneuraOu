@@ -934,31 +934,86 @@ namespace MakeBook2025
 
 			// 子がすべてleafもしくはconst nodeであるなら、それはconst nodeにできる。
 
-			// TODO : ここの処理は並列化できる。ここの速度はさほど問題ではないので、まあいいか…。
+			const size_t thread_num = Options.count("Threads") ? size_t(Options["Threads"]) : size_t(1);
+
 			u64 node_count = 0;
-			for (BookNodeIndex book_node_index = 0; book_node_index < BookNodeIndex(book_nodes.size()); ++book_node_index)
+
+			if (fast && thread_num > 1)
 			{
-				auto& node = book_nodes[book_node_index];
+				const BookNodeIndex total = BookNodeIndex(book_nodes.size());
+				vector<u8> can_be_const(total, 0);
 
-				// const node以外を処理対象とする。
-				if (node.const_node)
-					continue;
+				// Phase 1 : const化できる候補を並列判定
+				vector<std::thread> workers;
+				workers.reserve(thread_num);
 
-				// このnodeのすべての指し手がleafもしくはconst nodeか？
-				// ⇨ 子nodeがあって、そこがconst nodeでなければ、このnodeは処理対象ではない。
-				for (auto& move : node.moves)
-					if (!move.leaf && !book_nodes[move.next].const_node)
-						goto Next;
+				for (size_t t = 0; t < thread_num; ++t)
+				{
+					const BookNodeIndex begin = BookNodeIndex(t       * total / thread_num);
+					const BookNodeIndex end   = BookNodeIndex((t + 1) * total / thread_num);
 
-				// すべてがconst nodeだったので、このnodeをconst node化できる。
+					workers.emplace_back([&, begin, end]() {
+						for (BookNodeIndex i = begin; i < end; ++i)
+						{
+							const auto& node = book_nodes[i];
+							if (node.const_node)
+								continue;
 
-				// 子のbestをnode.vdに反映。これは次回以降にこのnodeの親が用いる。
-				node.vd = bestvd_for_parent(node);
-				node.const_node = true;
-				node_count ++;
+							bool ok = true;
+							for (const auto& move : node.moves)
+								if (!move.leaf && !book_nodes[move.next].const_node)
+								{
+									ok = false;
+									break;
+								}
 
-			Next: ;
+							can_be_const[i] = u8(ok);
+						}
+					});
+				}
+
+				for (auto& th : workers)
+					th.join();
+
+				// Phase 2 : const化を逐次反映
+				for (BookNodeIndex i = 0; i < total; ++i)
+				{
+					if (!can_be_const[i])
+						continue;
+
+					auto& node = book_nodes[i];
+					node.vd = bestvd_for_parent(node);
+					node.const_node = true;
+					node_count++;
+				}
 			}
+			else
+			{
+				for (BookNodeIndex book_node_index = 0; book_node_index < BookNodeIndex(book_nodes.size()); ++book_node_index)
+				{
+					auto& node = book_nodes[book_node_index];
+
+					// const node以外を処理対象とする。
+					if (node.const_node)
+						continue;
+
+					// このnodeのすべての指し手がleafもしくはconst nodeか？
+					// ⇨ 子nodeがあって、そこがconst nodeでなければ、このnodeは処理対象ではない。
+					for (auto& move : node.moves)
+						if (!move.leaf && !book_nodes[move.next].const_node)
+							goto Next;
+
+					// すべてがconst nodeだったので、このnodeをconst node化できる。
+
+					// 子のbestをnode.vdに反映。これは次回以降にこのnodeの親が用いる。
+					node.vd = bestvd_for_parent(node);
+					node.const_node = true;
+					node_count ++;
+
+				Next: ;
+				}
+			}
+
 			return node_count;
 		}
 
