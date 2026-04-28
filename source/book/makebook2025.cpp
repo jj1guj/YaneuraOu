@@ -508,6 +508,8 @@ namespace MakeBook2025
 		// ペタショック化前の定跡ファイルの読み込み。
 		Tools::Result read_book()
 		{
+			const size_t thread_num = Options.count("Threads") ? size_t(Options["Threads"]) : size_t(1);
+
 			// progress表示用
 			Tools::ProgressBar progress;
 
@@ -585,8 +587,6 @@ namespace MakeBook2025
 			if (!fast)
 				sfen_writer.Open(sfen_temp_path);
 
-			Position pos;
-
 			while (reader.ReadLine(line).is_ok())
 			{
 				progress.check(reader.GetFilePos());
@@ -602,14 +602,16 @@ namespace MakeBook2025
 				// "sfen "で始まる行は局面のデータであり、sfen文字列が格納されている。
 				if (line.length() >= 5 && line.substr(0, 5) == "sfen ")
 				{
-					string sfen = line.substr(5); // 新しいsfen文字列を"sfen "を除去して格納
+					string sfen_raw = line.substr(5); // 新しいsfen文字列を"sfen "を除去して格納
 
 					// sfen文字列はテンポラリファイルに書き出しておく。(もし末尾に手数があるなら、それも含めてそのまま書き出す)
 					// あとで局面を書き出す時に用いる。
 					if (fast)
-						original_sfens.push_back(sfen);
+						original_sfens.push_back(sfen_raw);
 					else
-						sfen_writer.WriteLine(sfen);
+						sfen_writer.WriteLine(sfen_raw);
+
+					string sfen = sfen_raw;
 
 					// 末尾のplyは使わないので除去。
 					StringExtension::trim_number_inplace(sfen);
@@ -618,30 +620,12 @@ namespace MakeBook2025
 					// ⇨ "w"の文字は駒には使わないので"w"があれば後手番であることが確定する。
 					Color stm = (sfen.find('w') != std::string::npos) ? WHITE : BLACK;
 
-					// 後手番化したsfen。
-					// hashkeyは、すべて後手番の局面で考えるから、hashkeyを求めるときに後手番の局面にしておく。
-					string white_sfen = stm == WHITE ? sfen : Position::sfen_to_flipped_sfen(sfen);
-
-					// hashkey_to_indexには後手番の局面のhash keyからのindexを登録する。
-					StateInfo si;
-					pos.set(white_sfen, &si, Threads.main());
-					HASH_KEY white_hash_key = pos.hash_key();
-					// 元の定跡ファイルにflipした局面は登録されていないものとする。
-					// ⇨  登録されていたら、あとから出現した局面を優先する。
-
-					auto book_node_index = BookNodeIndex(book_nodes.size()); // emplace_back()する前のsize()が今回追加されるindex
-					hashkey_to_index[white_hash_key] = book_node_index;
-
-					// この局面は王手されているのか？
-					bool checked = pos.checkers();
-
 					book_nodes.emplace_back(BookNode());
 					auto& book_node = book_nodes.back();
 
 					book_node.color        = stm; // 元の手番。これを維持してファイルに書き出さないと、sfen文字列でsortされていたのが狂う。
-					book_node.checked      = checked;
-					book_node.check_loop   = checked;
-					in_check_counter      += checked;
+					book_node.checked      = false;
+					book_node.check_loop   = false;
 
 					// この直後にやってくる指し手をこの局面の指し手として取り込む。
 					continue;
@@ -669,8 +653,86 @@ namespace MakeBook2025
 				book_node.moves.emplace_back(BookMove(move16, value, 0 /*depth*/));
 				// あとで合流のチェックをしてleaf nodeであるかを確認する。
 			}
+
 			if (!fast)
 				sfen_writer.Close();
+
+			// hashkeyと王手情報の計算。ここが重いので、fast時はThreadsで並列化する。
+			vector<HASH_KEY> white_hash_keys(book_nodes.size());
+			vector<u8> checked_nodes(book_nodes.size());
+
+			auto calc_node_info = [&](BookNodeIndex i, const string& sfen_src, Position& pos)
+			{
+				StateInfo si;
+				string sfen = sfen_src;
+				StringExtension::trim_number_inplace(sfen);
+
+				const auto stm = Color(book_nodes[i].color);
+				string white_sfen = stm == WHITE ? sfen : Position::sfen_to_flipped_sfen(sfen);
+
+				pos.set(white_sfen, &si, Threads.main());
+				white_hash_keys[i] = pos.hash_key();
+				checked_nodes[i] = u8(bool(pos.checkers()));
+			};
+
+			if (fast && thread_num > 1)
+			{
+				std::atomic<BookNodeIndex> next_index(0);
+				vector<std::thread> workers;
+				workers.reserve(thread_num);
+
+				for (size_t t = 0; t < thread_num; ++t)
+				{
+					workers.emplace_back([&, t]() {
+						Position pos;
+						while (true)
+						{
+							BookNodeIndex i = next_index.fetch_add(1);
+							if (i >= BookNodeIndex(book_nodes.size()))
+								break;
+
+							calc_node_info(i, original_sfens[i], pos);
+						}
+					});
+				}
+
+				for (auto& th : workers)
+					th.join();
+			}
+			else
+			{
+				Position pos;
+
+				SystemIO::TextReader sfen_reader;
+				if (!fast)
+					sfen_reader.Open(sfen_temp_path);
+
+				Tools::ProgressBar calc_progress;
+				calc_progress.reset(book_nodes.size() - 1);
+
+				for (BookNodeIndex i = 0; i < BookNodeIndex(book_nodes.size()); ++i)
+				{
+					string sfen;
+					if (fast)
+						sfen = original_sfens[i];
+					else
+						sfen_reader.ReadLine(sfen);
+
+					calc_node_info(i, sfen, pos);
+					calc_progress.check(i);
+				}
+
+				if (!fast)
+					sfen_reader.Close();
+			}
+
+			for (BookNodeIndex i = 0; i < BookNodeIndex(book_nodes.size()); ++i)
+			{
+				hashkey_to_index[white_hash_keys[i]] = i;
+				book_nodes[i].checked = checked_nodes[i] != 0;
+				book_nodes[i].check_loop = checked_nodes[i] != 0;
+				in_check_counter += checked_nodes[i] != 0;
+			}
 
 			return Tools::Result::Ok();
 		}
