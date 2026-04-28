@@ -491,7 +491,7 @@ namespace {
 
 // 💡 あるnodeで生成した指し手にbonusを与えるために、そのnodeで生成した指し手を良い順に保存しておく配列のcapacity。
 constexpr int SEARCHEDLIST_CAPACITY = 32;
-constexpr int mainHistoryDefault    = 68;
+constexpr int mainHistoryDefault    = 0;
 using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 
 // (*Scalers):
@@ -522,10 +522,10 @@ int correction_value(const YaneuraOuWorker& w, const Position& pos, const Stack*
     const int   bnpcv  = shared.nonpawn_correction_entry<BLACK>(pos).at(us).nonPawnBlack;
     const auto  cntcv =
       m.is_ok() ? (*(ss - 2)->continuationCorrectionHistory)[pos.piece_on(m.to_sq())][m.to_sq()]
-		        + (*(ss - 4)->continuationCorrectionHistory)[pos.piece_on(m.to_sq())][m.to_sq()]
+                + (*(ss - 4)->continuationCorrectionHistory)[pos.piece_on(m.to_sq())][m.to_sq()]
                  : 8;
 
-    return 9536 * pcv + 8494 * micv + 10132 * (wnpcv + bnpcv) + 7156 * cntcv;
+    return 12153 * pcv + 8620 * micv + 12355 * (wnpcv + bnpcv) + 7982 * cntcv;
 }
 
 // Add correctionHistory value to raw staticEval and guarantee evaluation
@@ -543,21 +543,21 @@ void update_correction_history(const Position&          pos,
     const Move  m  = (ss - 1)->currentMove;
     const Color us = pos.side_to_move();
 
-    constexpr int nonPawnWeight = 165;
+    constexpr int nonPawnWeight = 187;
 
     auto&         shared        = workerThread.sharedHistory;
 
     shared.pawn_correction_entry(pos).at(us).pawn << bonus;
-    shared.minor_piece_correction_entry(pos).at(us).minor << bonus * 156 / 128;
+    shared.minor_piece_correction_entry(pos).at(us).minor << bonus * 153 / 128;
     shared.nonpawn_correction_entry<WHITE>(pos).at(us).nonPawnWhite << bonus * nonPawnWeight / 128;
     shared.nonpawn_correction_entry<BLACK>(pos).at(us).nonPawnBlack << bonus * nonPawnWeight / 128;
 
     if (m.is_ok())
     {
         const Square to = m.to_sq();
-        const Piece  pc = pos.piece_on(m.to_sq());
-        (*(ss - 2)->continuationCorrectionHistory)[pc][to] << bonus * 137 / 128;
-        (*(ss - 4)->continuationCorrectionHistory)[pc][to] << bonus * 64 / 128;
+        const Piece  pc = pos.piece_on(to);
+        (*(ss - 2)->continuationCorrectionHistory)[pc][to] << bonus * 126 / 128;
+        (*(ss - 4)->continuationCorrectionHistory)[pc][to] << bonus * 63 / 128;
     }
 }
 
@@ -741,15 +741,15 @@ void Search::YaneuraOuWorker::start_searching() {
         return;
     }
 
-	// 📌 ここ以下のコードは、main threadで"go"に対して実行される。
-	//     "go"のごとに初期化しないといけないものはここで行う。
+    // 📌 ここ以下のコードは、main threadで"go"に対して実行される。
+    //     "go"のごとに初期化しないといけないものはここで行う。
 
     // iterative_deepening()内で最終PVをすでに出力したか。
     bool uciPvSent = false;
 
-	// 📌 今回の思考時間の設定。
-	//     これは、ponderhitした時にponderhitにパラメーターが付随していれば
-	//     再計算するする必要性があるので、いずれにせよ呼び出しておく必要がある。
+    // 📌 今回の思考時間の設定。
+    //     これは、ponderhitした時にponderhitにパラメーターが付随していれば
+    //     再計算するする必要性があるので、いずれにせよ呼び出しておく必要がある。
     // 💡 やねうら王では、originalTimeAdjustは用いない。
 
 #if STOCKFISH
@@ -1310,7 +1310,7 @@ bool Search::YaneuraOuWorker::iterative_deepening() {
     bool uciPvSent = false;
 
     // 💡 lowPlyHistoryは、試合開始時に1回だけではなく、"go"の度に初期化したほうが強い。
-    lowPlyHistory.fill(97);
+    lowPlyHistory.fill(98);
 
     // Iterative deepening loop until requested to stop or the target depth is reached
     // 要求があるか、または目標深度に達するまで反復深化ループを実行します
@@ -1904,7 +1904,7 @@ void YaneuraOuWorker::clear() {
 
 	// TODO : あとで調整する。pawnHistory.fill(-1238@);も。
 	mainHistory.fill(mainHistoryDefault);
-    captureHistory.fill(-689);
+    captureHistory.fill(-678);
 
     // Each thread is responsible for clearing their part of shared history
     sharedHistory.correctionHistory.clear_range(0, numaThreadIdx, numaTotal);
@@ -1914,7 +1914,7 @@ void YaneuraOuWorker::clear() {
 
     for (auto& to : continuationCorrectionHistory)
         for (auto& h : to)
-            h.fill(8);
+            h.fill(6);
 
     //     ほとんどの履歴エントリがいずれにせよ後で負になるため、
     //     開始値を「正しい」方向に少しシフトさせるため、負の数で埋めている。
@@ -1926,7 +1926,7 @@ void YaneuraOuWorker::clear() {
         for (StatsType c : {NoCaptures, Captures})
             for (auto& to : continuationHistory[inCheck][c])
                 for (auto& h : to)
-                    h.fill(-529);
+                    h.fill(-523);
 
 	// reductions tableの初期化(これはWorkerごとが持つように変更された)
     for (size_t i = 1; i < reductions.size(); ++i)
@@ -2011,7 +2011,7 @@ Value YaneuraOuWorker::search(Position& pos, Stack* ss, Value alpha, Value beta,
 	// pv : このnodeからのPV line(読み筋)
     // st : do_move()するときに必要
 
-	PVMoves   pv;
+    PVMoves   pv;
 	StateInfo st;
 
 	// posKey       : このnodeのhash key
@@ -2464,9 +2464,9 @@ Value YaneuraOuWorker::search(Position& pos, Stack* ss, Value alpha, Value beta,
             // Extra penalty for early quiet moves of the previous ply
             // 1手前の早い時点のquietの指し手に対する追加のペナルティ
 
-			// 💡 1手前がMove::null()であることを考慮する必要がある。
+            // 💡 1手前がMove::null()であることを考慮する必要がある。
 
-			if (prevSq != SQ_NONE && (ss - 1)->moveCount <= 4 && !priorCapture)
+            if (prevSq != SQ_NONE && (ss - 1)->moveCount <= 4 && !priorCapture)
                 update_continuation_histories(ss - 1, pos.piece_on(prevSq), prevSq, -2142);
         }
 
@@ -3076,8 +3076,8 @@ Value YaneuraOuWorker::search(Position& pos, Stack* ss, Value alpha, Value beta,
     // (残り探索深さを)削減された探索でbetaを大幅に上回る値が返される場合、
     // 直前の手を（ほぼ）安全に枝刈りできます。
 
-	// probCutに使うbeta値。
-	probCutBeta = beta + 224 - 64 * improving;
+    // probCutに使うbeta値。
+    probCutBeta = beta + 224 - 64 * improving;
 
 	if (depth >= 3
         && !is_decisive(beta)
@@ -3338,8 +3338,8 @@ moves_loop:  // When in check, search starts here
                     //       = CapturePieceValuePlusPromote()
                     //     のほうがより正確な評価ではないか？
 
-					Value futilityValue = ss->staticEval + 231 + 211 * lmrDepth
-										+ PieceValue[capturedPiece] + 130 * captHist / 1024;
+                    Value futilityValue = ss->staticEval + 231 + 211 * lmrDepth
+                                        + PieceValue[capturedPiece] + 130 * captHist / 1024;
 
 
                     if (futilityValue <= alpha)
@@ -3381,10 +3381,10 @@ moves_loop:  // When in check, search starts here
 				// (*Scaler): Generally, lower divisors scales well
 				// 一般に、割る数（divisor）が小さいほどスケールしやすい。
 
-				lmrDepth += history / 3220;
+                lmrDepth += history / 3220;
 
-				Value futilityValue = ss->staticEval + 47 + 171 * !bestMove + 134 * lmrDepth
-                    + 90 * (ss->staticEval > alpha);
+                Value futilityValue = ss->staticEval + 47 + 171 * !bestMove + 134 * lmrDepth
+                                    + 90 * (ss->staticEval > alpha);
 
                 // Futility pruning: parent node
                 // (*Scaler): Generally, more frequent futility pruning
@@ -3607,9 +3607,9 @@ moves_loop:  // When in check, search starts here
         // これらの減少量調整には、非線形スケーリングの有効性が証明されていません
 
         r += 843;  // Base reduction offset to compensate for other tweaks
-				   // 他の調整を補正するための基準リダクションオフセット
+                   // 他の調整を補正するための基準リダクションオフセット
 
-		r -= moveCount * 66;
+        r -= moveCount * 66;
         r -= std::abs(correctionValue) / 30450;
 
         // Increase reduction for cut nodes
@@ -3730,8 +3730,6 @@ moves_loop:  // When in check, search starts here
 
                 update_continuation_histories(ss, movedPiece, move.to_sq(), 1365);
             }
-            else if (value > alpha && value < bestValue + 9)
-                newDepth--;
         }
 
 		// -----------------------
@@ -4550,10 +4548,10 @@ Value Search::YaneuraOuWorker::qsearch(Position& pos, Stack* ss, Value alpha, Va
 		if (bestValue > alpha)
             alpha = bestValue;
 
-		// 💡 futilityの基準となる値をbestValueにmargin値を加算したものとして、
+        // 💡 futilityの基準となる値をbestValueにmargin値を加算したものとして、
         //     これを下回るようであれば枝刈りする。
 
-		futilityBase = ss->staticEval + 352;
+        futilityBase = ss->staticEval + 352;
 
     }
 
@@ -4705,7 +4703,7 @@ Value Search::YaneuraOuWorker::qsearch(Position& pos, Stack* ss, Value alpha, Va
 					 captureの時の歩損は、歩で取る、同角、同角みたいな局面なのでそこにはあまり意味なさげ。
 			*/
 
-			if (!pos.see_ge(move, -78))
+            if (!pos.see_ge(move, -78))
                 continue;
         }
 
@@ -5025,8 +5023,8 @@ void update_all_stats(const Position&          pos,
     Piece                  movedPiece     = pos.moved_piece(bestMove);
     PieceType              capturedPiece;
 
-	int bonus = std::min(121 * depth - 77, 1633) + 375 * (bestMove == ttMove);
-	int malus = std::min(825 * depth - 196, 2159) - 16 * moveCount;
+    int bonus = std::min(121 * depth - 77, 1633) + 375 * (bestMove == ttMove);
+    int malus = std::min(825 * depth - 196, 2159) - 16 * moveCount;
 
     /*
 		📓 Stockfish 14ではcapture_or_promotion()からcapture()に変更された。[2022/3/23]
