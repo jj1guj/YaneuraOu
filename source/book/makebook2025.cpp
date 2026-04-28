@@ -1198,16 +1198,16 @@ namespace MakeBook2025
 		//   今回更新されたノード数。
 		u64 propagate_all_nodes_once()
 		{
-			// 今回更新されたnode数
-			u64 nodes_count = 0;
-			for (BookNodeIndex i = 0 ; i < BookNodeIndex(book_nodes.size()) ; ++i)
+			const size_t thread_num = Options.count("Threads") ? size_t(Options["Threads"]) : size_t(1);
+
+			auto process_node = [&](BookNodeIndex i) -> u64
 			{
 				auto& node = book_nodes[i];
 
 				// const node　⇨　vdの値が変わらないので更新は無駄
 				// check loop  ⇨  このあとdfsで更新するのでここで更新するとおかしくなる
 				if (node.const_node || node.check_loop)
-					continue;
+					return 0;
 
 				auto best = bestvd_for_parent(node);
 
@@ -1216,11 +1216,45 @@ namespace MakeBook2025
 				if (best.depth > BOOK_MAX_PLY)
 					best.depth = BOOK_DEPTH_MAX;
 
-				// 前回からvdが変化した箇所のカウント。
-				nodes_count += node.vd != best;
-
-				// vdを更新する。
+				const u64 updated = node.vd != best;
 				node.vd = best;
+				return updated;
+			};
+
+			u64 nodes_count = 0;
+
+			if (fast && thread_num > 1)
+			{
+				std::atomic<u64> updated_total(0);
+
+				vector<std::thread> workers;
+				workers.reserve(thread_num);
+
+				const BookNodeIndex total = BookNodeIndex(book_nodes.size());
+
+				for (size_t t = 0; t < thread_num; ++t)
+				{
+					// 各スレッドに連続した範囲を割り当て (false sharing回避)
+					const BookNodeIndex begin = BookNodeIndex(t       * total / thread_num);
+					const BookNodeIndex end   = BookNodeIndex((t + 1) * total / thread_num);
+
+					workers.emplace_back([&, begin, end]() {
+						u64 local_updated = 0;
+						for (BookNodeIndex i = begin; i < end; ++i)
+							local_updated += process_node(i);
+						updated_total.fetch_add(local_updated);
+					});
+				}
+
+				for (auto& th : workers)
+					th.join();
+
+				nodes_count = updated_total.load();
+			}
+			else
+			{
+				for (BookNodeIndex i = 0 ; i < BookNodeIndex(book_nodes.size()) ; ++i)
+					nodes_count += process_node(i);
 			}
 
 			//cout << nodes_count << endl;
