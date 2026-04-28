@@ -248,3 +248,14 @@ FakesAssemblies/
 GeneratedArtifacts/
 _Pvt_Extensions/
 ModelManifest.xml
+
+# clangd related files
+*.cache/
+*compile_commands.json
+
+# build binaries
+*YaneuraOu-by-gcc
+
+*.txt
+*.db
+
