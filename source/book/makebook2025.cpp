@@ -1375,21 +1375,17 @@ namespace MakeBook2025
 			// バージョン識別用文字列
 			writer.WriteLine(::Book::BookDBHeader2016_100);
 
-			SystemIO::TextReader sfen_reader;
-			if (!fast)
-				sfen_reader.Open(sfen_temp_path);
+			const size_t thread_num = Options.count("Threads") ? size_t(Options["Threads"]) : size_t(1);
 
-			for(BookNodeIndex i = 0 ; i < BookNodeIndex(book_nodes.size()) ; ++i)
+			// 1ノード分の出力文字列を構築するラムダ
+			auto build_node_output = [&](BookNodeIndex i, const string& sfen) -> string
 			{
 				auto& book_node = book_nodes[i];
-				string sfen;
-				if (fast)
-					sfen = original_sfens[i];
-				else
-					sfen_reader.ReadLine(sfen); // 元のsfen(手番を含め)通りにしておく。
-
-				writer.WriteLine("sfen " + sfen);
-				writer.Flush(); // ⇦ これ呼び出さないとメモリ食ったままになる。
+				string out;
+				out.reserve(256);
+				out += "sfen ";
+				out += sfen;
+				out += "\r\n";
 
 				// いったんコピー。
 				SmallVector<BookMove> moves;
@@ -1415,12 +1411,12 @@ namespace MakeBook2025
 					});
 
 				// 指し手を出力
-				for(size_t i = 0 ; i < moves.size() ; ++i)
+				for (size_t j = 0; j < moves.size(); ++j)
 				{
-					auto& move = moves[i];
+					auto move_item = moves[j];
 
 					// shrinkモードなら、最善手と異なる指し手は削除。
-					if (shrink && moves[0].vd.value != move.vd.value)
+					if (shrink && moves[0].vd.value != move_item.vd.value)
 						continue;
 
 					// 1.
@@ -1435,19 +1431,84 @@ namespace MakeBook2025
 					// よって、check loopでかつ!checkのときで同じスコアのときにはdepthを見てはならない。
 					// そのため、depth == BOOK_DEPTH_PERPUTUAL_CHECKはValueDepthのoperator >() で特殊な処理をしている。
 
-					if (i > 0 && moves[0].vd.value == move.vd.value && moves[0].vd.depth != move.vd.depth)
-						move.vd.value--;
+					if (j > 0 && moves[0].vd.value == move_item.vd.value && moves[0].vd.depth != move_item.vd.depth)
+						move_item.vd.value--;
 
 					// 元のDB上で後手の局面なら後手の局面として書き出したいので、
 					// 後手の局面であるなら指し手を反転させる。
-					Move16 m16 = (book_node.color == WHITE) ? flip_move(move.move) : move.move;
-					writer.WriteLine(to_usi_string(m16) + " none " + to_string(move.vd.value) + " " + to_string(move.vd.depth));
+					Move16 m16 = (book_node.color == WHITE) ? flip_move(move_item.move) : move_item.move;
+					out += to_usi_string(m16);
+					out += " none ";
+					out += to_string(move_item.vd.value);
+					out += ' ';
+					out += to_string(move_item.vd.depth);
+					out += "\r\n";
 				}
 
-				progress.check(i);
+				return out;
+			};
+
+			if (fast && thread_num > 1)
+			{
+				// チャンク単位で並列文字列生成 → 逐次書き出し
+				const BookNodeIndex total      = BookNodeIndex(book_nodes.size());
+				const BookNodeIndex chunk_size = BookNodeIndex(1) << 17; // 128K nodes per chunk (~26MB)
+
+				vector<string> chunk_outputs;
+
+				for (BookNodeIndex chunk_start = 0; chunk_start < total; chunk_start += chunk_size)
+				{
+					const BookNodeIndex chunk_end = std::min(chunk_start + chunk_size, total);
+					const BookNodeIndex chunk_len = chunk_end - chunk_start;
+
+					chunk_outputs.assign(chunk_len, string());
+
+					// 並列: 文字列生成
+					vector<std::thread> workers;
+					workers.reserve(thread_num);
+					for (size_t t = 0; t < thread_num; ++t)
+					{
+						const BookNodeIndex begin = BookNodeIndex(t       * chunk_len / thread_num);
+						const BookNodeIndex end   = BookNodeIndex((t + 1) * chunk_len / thread_num);
+						workers.emplace_back([&, begin, end, chunk_start]() {
+							for (BookNodeIndex ci = begin; ci < end; ++ci)
+								chunk_outputs[ci] = build_node_output(chunk_start + ci, original_sfens[chunk_start + ci]);
+						});
+					}
+					for (auto& th : workers)
+						th.join();
+
+					// 逐次: 書き出し
+					for (BookNodeIndex ci = 0; ci < chunk_len; ++ci)
+						writer.Write(chunk_outputs[ci]);
+
+					progress.check(chunk_end - 1);
+				}
 			}
-			if (!fast)
-				sfen_reader.Close();
+			else
+			{
+				// 非fast または シングルスレッドの場合は逐次処理
+				SystemIO::TextReader sfen_reader;
+				if (!fast)
+					sfen_reader.Open(sfen_temp_path);
+
+				for (BookNodeIndex i = 0; i < BookNodeIndex(book_nodes.size()); ++i)
+				{
+					string sfen;
+					if (fast)
+						sfen = original_sfens[i];
+					else
+						sfen_reader.ReadLine(sfen); // 元のsfen(手番を含め)通りにしておく。
+
+					writer.Write(build_node_output(i, sfen));
+					writer.Flush(); // ⇦ これ呼び出さないとメモリ食ったままになる。
+
+					progress.check(i);
+				}
+
+				if (!fast)
+					sfen_reader.Close();
+			}
 
 			cout << "write " + writebook_path << endl;
 		}
