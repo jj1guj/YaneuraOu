@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include <iomanip>		// std::setprecision()
 #include <numeric>      // std::accumulate()
+#include <chrono>
 
 using namespace std;
 
@@ -574,14 +575,21 @@ namespace Book
 				return 1;
 			}
 			cout << "book merge from " << book_name[0] << " and " << book_name[1] << " to " << book_name[2] << endl;
-			for (int i = 0; i < 2; ++i)
+			auto total_start = std::chrono::high_resolution_clock::now();
 			{
-				if (book[i].read_book(book_name[i]).is_not_ok())
-					return 1;
+				auto t0 = std::chrono::high_resolution_clock::now();
+				for (int i = 0; i < 2; ++i)
+				{
+					if (book[i].read_book(book_name[i]).is_not_ok())
+						return 1;
+				}
+				auto t1 = std::chrono::high_resolution_clock::now();
+				cout << "[TIME] read_book           : " << std::chrono::duration<double>(t1 - t0).count() << " sec" << endl;
 			}
 
 			// 読み込めたので合体させる。
 			cout << "merge..";
+			auto merge_start = std::chrono::high_resolution_clock::now();
 
 			// 同一nodeと非同一nodeの統計用
 			// diffrent_nodes1 = book0側にのみあったnodeの数
@@ -665,11 +673,24 @@ namespace Book
 			}
 
 			cout << "..done" << endl;
+			{
+				auto merge_end = std::chrono::high_resolution_clock::now();
+				cout << "[TIME] merge               : " << std::chrono::duration<double>(merge_end - merge_start).count() << " sec" << endl;
+			}
 
 			cout << "same nodes = " << same_nodes
 				<< " , different nodes =  " << diffrent_nodes1 << " + " << diffrent_nodes2 << endl;
 
-			book[2].write_book(book_name[2]);
+			{
+				auto t0 = std::chrono::high_resolution_clock::now();
+				book[2].write_book(book_name[2]);
+				auto t1 = std::chrono::high_resolution_clock::now();
+				cout << "[TIME] write_book          : " << std::chrono::duration<double>(t1 - t0).count() << " sec" << endl;
+			}
+			{
+				auto total_end = std::chrono::high_resolution_clock::now();
+				cout << "[TIME] TOTAL               : " << std::chrono::duration<double>(total_end - total_start).count() << " sec" << endl;
+			}
 
 		}
 		else if (book_sort) {
