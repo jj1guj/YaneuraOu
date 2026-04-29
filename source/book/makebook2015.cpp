@@ -637,6 +637,10 @@ namespace Book
 			book[0].foreach([&](string sfen, BookMovesPtr it0) { upsert_entry(entries0, sfen, it0); });
 			book[1].foreach([&](string sfen, BookMovesPtr it1) { upsert_entry(entries1, sfen, it1); });
 
+			// 元bookの内容はentries0/1へ複製済みなのでここで解放しておく。
+			book[0].release_memory();
+			book[1].release_memory();
+
 			for (auto& kv : entries0)
 			{
 				auto& key = kv.first;
@@ -680,6 +684,10 @@ namespace Book
 
 			cout << "same nodes = " << same_nodes
 				<< " , different nodes =  " << diffrent_nodes1 << " + " << diffrent_nodes2 << endl;
+
+			// merge結果はbook[2]へ反映済みなので中間mapを先に解放しておく。
+			unordered_map<string, MergeEntry>().swap(entries0);
+			unordered_map<string, MergeEntry>().swap(entries1);
 
 			{
 				auto t0 = std::chrono::high_resolution_clock::now();

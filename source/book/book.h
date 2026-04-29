@@ -173,6 +173,10 @@ namespace Book
 		// [ASYNC] Aperyの定跡ファイルに書き出す（定跡コンバート用）
 		Tools::Result write_apery_book(const std::string& filename);
 
+		// [ASYNC] 保持している定跡データを解放する。
+		// mergeのような一時用途でメモリを早めに返却したい場合に用いる。
+		void release_memory();
+
 		// --------------------------------------------------------------------------
 		//   以下のメンバは、普段は外部から普段は直接アクセスすべきではない。
 		//
@@ -306,7 +310,7 @@ namespace Book
 		//
 		// 以下の3つの変数は、この関数がtrueを返した時のみ有効。
 		// bestMove   : 今回選択された指し手
-		// ponderMove : bestMoveの次の定跡の指し手 
+		// ponderMove : bestMoveの次の定跡の指し手
 		// value      : bestMoveの評価値。
 		bool probe_impl(Position& rootPos, bool silent, Move16& bestMove, Move16& ponderMove , Value& value , bool forceHit = false);
 
@@ -333,7 +337,7 @@ namespace BookTools
 	// "sfen xxx moves yyy ..."
 	// また、局面を1つ進めるごとにposition_callback関数が呼び出される。
 	// 辿った局面すべてに対して何かを行いたい場合は、これを利用すると良い。
-	// 
+	//
 	// position_callbackは、その局面と、その局面での指し手が引数にセットされて呼び出される。
 	// 与えたsfenの最後の局面では、MoveはMove::none()が入って呼び出される。
 	void feed_position_string(Position& pos, const std::string& root_sfen, std::deque<StateInfo>& si,
