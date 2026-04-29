@@ -633,6 +633,10 @@ namespace Book
 
 		writer.Close();
 
+		// 大規模なローカル変数を明示的に解放し、関数終了時のデストラクト負荷を軽減する。
+		vector<pair<string, BookMovesPtr>>().swap(vectored_book);
+		std::unordered_map<string, int>().swap(book_ply);
+
 		{
 			auto wb_t4 = std::chrono::high_resolution_clock::now();
 			cout << "[TIME] write_book/write     : " << std::chrono::duration<double>(wb_t4 - wb_t3).count() << " sec" << endl;

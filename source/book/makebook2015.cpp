@@ -701,6 +701,9 @@ namespace Book
 				auto t1 = std::chrono::high_resolution_clock::now();
 				cout << "[TIME] write_book          : " << std::chrono::duration<double>(t1 - t0).count() << " sec" << endl;
 			}
+
+			// write_book完了後、book[2]のメモリを早期解放しプロセス終了時の負荷を軽減。
+			book[2].release_memory();
 			{
 				auto total_end = std::chrono::high_resolution_clock::now();
 				cout << "[TIME] TOTAL               : " << std::chrono::duration<double>(total_end - total_start).count() << " sec" << endl;
