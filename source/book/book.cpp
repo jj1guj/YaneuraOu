@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <iomanip>		// std::setprecision()
 #include <numeric>      // std::accumulate()
+#include <thread>
 
 using namespace std;
 using std::cout;
@@ -435,29 +436,58 @@ namespace Book
 		// 進捗の出力
 		u64 counter = 0;
 		Tools::ProgressBar progress(vectored_book.size() * 2);
+		const size_t thread_num = Options.count("Threads") ? size_t(Options["Threads"]) : size_t(1);
 
+		if (thread_num > 1 && vectored_book.size() >= thread_num)
+		{
+			const size_t total = vectored_book.size();
+			vector<std::thread> workers;
+			workers.reserve(thread_num);
+
+			for (size_t t = 0; t < thread_num; ++t)
+			{
+				const size_t begin = t * total / thread_num;
+				const size_t end   = (t + 1) * total / thread_num;
+
+				workers.emplace_back([&, begin, end]() {
+					Position pos;
+					for (size_t i = begin; i < end; ++i)
+					{
+						StateInfo si;
+						pos.set(vectored_book[i].first, &si, Threads.main());
+						vectored_book[i].first = pos.sfen();
+					}
+				});
+			}
+
+			for (auto& th : workers)
+				th.join();
+		}
+		else
 		{
 			Position pos;
-
-			// std::vectorにしてあるのでit.firstを書き換えてもitは無効にならないはず。
 			for (auto& it : vectored_book)
 			{
 				StateInfo si;
-				pos.set(it.first,&si,Threads.main());
-				auto sfen = pos.sfen();
-				it.first = sfen;
-
-				auto sfen_left = StringExtension::trim_number(sfen); // 末尾にplyがあるはずじゃろ
-				int ply = StringExtension::to_int(sfen.substr(sfen_left.length()), 0);
-
-				auto it2 = book_ply.find(sfen_left);
-				if (it2 == book_ply.end())
-					book_ply[sfen_left] = ply; // エントリーが見つからなかったので何も考えずに追加
-				else
-					it2->second = std::min(it2->second, ply); // 手数の短いほうを代入しておく。
-
-				progress.check(++counter);
+				pos.set(it.first, &si, Threads.main());
+				it.first = pos.sfen();
 			}
+		}
+
+		// 重複局面の最小ply集計は共有mapへの更新があるため逐次で行う。
+		for (auto& it : vectored_book)
+		{
+			auto& sfen = it.first;
+			auto sfen_left = StringExtension::trim_number(sfen); // 末尾にplyがあるはずじゃろ
+			int ply = StringExtension::to_int(sfen.substr(sfen_left.length()), 0);
+
+			auto it2 = book_ply.find(sfen_left);
+			if (it2 == book_ply.end())
+				book_ply[sfen_left] = ply; // エントリーが見つからなかったので何も考えずに追加
+			else
+				it2->second = std::min(it2->second, ply); // 手数の短いほうを代入しておく。
+
+			progress.check(++counter);
 		}
 
 		// ここvectored_bookが、sfen文字列でsortされていて欲しいのでsortする。
