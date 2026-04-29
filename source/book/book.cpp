@@ -509,11 +509,47 @@ namespace Book
 			cout << "[TIME] write_book/normalize : " << std::chrono::duration<double>(wb_t1 - wb_t0).count() << " sec" << endl;
 		}
 		auto wb_t1 = std::chrono::high_resolution_clock::now();
-		for (auto& it : vectored_book)
+		const size_t total = vectored_book.size();
+		vector<size_t> sfen_left_lens(total);
+		vector<int> plys(total);
+
+		if (thread_num > 1 && total >= thread_num)
 		{
-			auto& sfen = it.first;
-			auto sfen_left = StringExtension::trim_number(sfen); // 末尾にplyがあるはずじゃろ
-			int ply = StringExtension::to_int(sfen.substr(sfen_left.length()), 0);
+			vector<std::thread> workers;
+			workers.reserve(thread_num);
+			for (size_t t = 0; t < thread_num; ++t)
+			{
+				const size_t begin = t * total / thread_num;
+				const size_t end   = (t + 1) * total / thread_num;
+				workers.emplace_back([&, begin, end]() {
+					for (size_t i = begin; i < end; ++i)
+					{
+						auto& sfen = vectored_book[i].first;
+						auto sfen_left = StringExtension::trim_number(sfen);
+						sfen_left_lens[i] = sfen_left.length();
+						plys[i] = StringExtension::to_int(sfen.substr(sfen_left_lens[i]), 0);
+					}
+				});
+			}
+			for (auto& th : workers)
+				th.join();
+		}
+		else
+		{
+			for (size_t i = 0; i < total; ++i)
+			{
+				auto& sfen = vectored_book[i].first;
+				auto sfen_left = StringExtension::trim_number(sfen);
+				sfen_left_lens[i] = sfen_left.length();
+				plys[i] = StringExtension::to_int(sfen.substr(sfen_left_lens[i]), 0);
+			}
+		}
+
+		for (size_t i = 0; i < total; ++i)
+		{
+			auto& sfen = vectored_book[i].first;
+			auto sfen_left = sfen.substr(0, sfen_left_lens[i]);
+			int ply = plys[i];
 
 			auto it2 = book_ply.find(sfen_left);
 			if (it2 == book_ply.end())
