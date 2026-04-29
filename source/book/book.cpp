@@ -12,6 +12,7 @@
 #include <iomanip>		// std::setprecision()
 #include <numeric>      // std::accumulate()
 #include <thread>
+#include <chrono>
 
 using namespace std;
 using std::cout;
@@ -438,6 +439,8 @@ namespace Book
 		Tools::ProgressBar progress(vectored_book.size() * 2);
 		const size_t thread_num = Options.count("Threads") ? size_t(Options["Threads"]) : size_t(1);
 
+		auto wb_t0 = std::chrono::high_resolution_clock::now();
+
 		if (thread_num > 1 && vectored_book.size() >= thread_num)
 		{
 			const size_t total = vectored_book.size();
@@ -475,6 +478,11 @@ namespace Book
 		}
 
 		// 重複局面の最小ply集計は共有mapへの更新があるため逐次で行う。
+		{
+			auto wb_t1 = std::chrono::high_resolution_clock::now();
+			cout << "[TIME] write_book/normalize : " << std::chrono::duration<double>(wb_t1 - wb_t0).count() << " sec" << endl;
+		}
+		auto wb_t1 = std::chrono::high_resolution_clock::now();
 		for (auto& it : vectored_book)
 		{
 			auto& sfen = it.first;
@@ -491,11 +499,22 @@ namespace Book
 		}
 
 		// ここvectored_bookが、sfen文字列でsortされていて欲しいのでsortする。
+		{
+			auto wb_t2 = std::chrono::high_resolution_clock::now();
+			cout << "[TIME] write_book/ply_agg   : " << std::chrono::duration<double>(wb_t2 - wb_t1).count() << " sec" << endl;
+		}
+		auto wb_t2 = std::chrono::high_resolution_clock::now();
 		// アルファベットの範囲ではlocaleの影響は受けない…はず…。
 		std::sort(vectored_book.begin(), vectored_book.end(),
 			[](const pair<string, BookMovesPtr>&lhs, const pair<string, BookMovesPtr>&rhs) {
 			return lhs.first < rhs.first;
 		});
+
+		{
+			auto wb_t3 = std::chrono::high_resolution_clock::now();
+			cout << "[TIME] write_book/sort      : " << std::chrono::duration<double>(wb_t3 - wb_t2).count() << " sec" << endl;
+		}
+		auto wb_t3 = std::chrono::high_resolution_clock::now();
 
 		for (auto& it : vectored_book)
 		{
@@ -526,6 +545,11 @@ namespace Book
 		}
 
 		writer.Close();
+
+		{
+			auto wb_t4 = std::chrono::high_resolution_clock::now();
+			cout << "[TIME] write_book/write     : " << std::chrono::duration<double>(wb_t4 - wb_t3).count() << " sec" << endl;
+		}
 
 		return Tools::Result::Ok();
 	}
