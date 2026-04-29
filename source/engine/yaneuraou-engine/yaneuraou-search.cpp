@@ -3478,7 +3478,7 @@ moves_loop:  // When in check, search starts here
 
             //  📍 このmargin値は評価関数の性質に合わせて調整されるべき。
 
-            Value singularBeta  = ttData.value - (56 + 81 * (ss->ttPv && !PvNode)) * depth / 60;
+            Value singularBeta  = ttData.value - (60 + 66 * (ss->ttPv && !PvNode)) * depth / 55;
             Depth singularDepth = newDepth / 2;
 
             // 💡 move(ttMove)の指し手を以下のsearch()での探索から除外。
@@ -3496,11 +3496,11 @@ moves_loop:  // When in check, search starts here
 
             if (value < singularBeta)
             {
-                int corrValAdj   = std::abs(correctionValue) / 229958;
-                int doubleMargin = -4 + 198 * PvNode - 212 * !ttCapture - corrValAdj
-                                 - 921 * ttMoveHistory / 127649 - (ss->ply > rootDepth) * 45;
-                int tripleMargin = 76 + 308 * PvNode - 250 * !ttCapture + 92 * ss->ttPv - corrValAdj
-                                 - (ss->ply * 2 > rootDepth * 3) * 52;
+                int corrValAdj   = std::abs(correctionValue) / 210590;
+                int doubleMargin = -4 + 212 * PvNode - 182 * !ttCapture - corrValAdj
+                                 - 906 * ttMoveHistory / 116517 - (ss->ply > rootDepth) * 44;
+                int tripleMargin = 73 + 320 * PvNode - 218 * !ttCapture + 92 * ss->ttPv - corrValAdj
+                                 - (ss->ply > rootDepth) * 45;
 
                 // 📝 2重延長を制限して探索の組合せ爆発を回避する必要がある。
 
@@ -3538,7 +3538,7 @@ moves_loop:  // When in check, search starts here
 
             else if (value >= beta && !is_decisive(value))
             {
-                ttMoveHistory << std::max(-400 - 100 * depth, -4000);
+                ttMoveHistory << std::max(-424 - 107 * depth, -3375);
                 return value;
             }
 
