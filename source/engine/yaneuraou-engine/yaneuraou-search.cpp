@@ -3076,7 +3076,7 @@ Value YaneuraOuWorker::search(Position& pos, Stack* ss, Value alpha, Value beta,
     // 直前の手を（ほぼ）安全に枝刈りできます。
 
     // probCutに使うbeta値。
-    probCutBeta = beta + 224 - 64 * improving;
+    probCutBeta = beta + 224 - 61 * improving;
 
 	if (depth >= 3
         && !is_decisive(beta)
@@ -3154,7 +3154,7 @@ moves_loop:  // When in check, search starts here
     // Step 12. 小さなProbcutのアイデア
     // -----------------------
 
-    probCutBeta = beta + 418;
+    probCutBeta = beta + 416;
     if ((ttData.bound & BOUND_LOWER) && ttData.depth >= depth - 4 && ttData.value >= probCutBeta
         && !is_decisive(beta) && is_valid(ttData.value) && !is_decisive(ttData.value))
         return probCutBeta;
@@ -3337,8 +3337,8 @@ moves_loop:  // When in check, search starts here
                     //       = CapturePieceValuePlusPromote()
                     //     のほうがより正確な評価ではないか？
 
-                    Value futilityValue = ss->staticEval + 231 + 211 * lmrDepth
-                                        + PieceValue[capturedPiece] + 130 * captHist / 1024;
+                    Value futilityValue = ss->staticEval + 218 + 223 * lmrDepth
+                                        + PieceValue[capturedPiece] + 131 * captHist / 1024;
 
 
                     if (futilityValue <= alpha)
@@ -3350,7 +3350,7 @@ moves_loop:  // When in check, search starts here
                 // 駒取りや王手に対するSEE（静的交換評価）に基づく枝刈り
 				// ステイルメイト（引き分け）を狙うために、最後の駒を犠牲にする手の枝刈りは避ける
 
-                int margin = std::max(157 * depth + captHist / 29, 0);
+                int margin = std::max(167 * depth + captHist * 34 / 1024, 0);
 #if STOCKFISH
 				if ((alpha >= VALUE_DRAW || pos.non_pawn_material(us) != PieceValue[movedPiece])
 #else
@@ -3372,18 +3372,18 @@ moves_loop:  // When in check, search starts here
                 // Continuation history based pruning
                 // Continuation historyに基づいた枝刈り(historyの値が悪いものに関してはskip)
 
-                if (history < -4312 * depth)
+                if (history < -4097 * depth)
                     continue;
 
-                history += 76 * mainHistory[us][move.raw()] / 32;
+                history += 71 * mainHistory[us][move.raw()] / 32;
 
 				// (*Scaler): Generally, lower divisors scales well
 				// 一般に、割る数（divisor）が小さいほどスケールしやすい。
 
                 lmrDepth += history / 3220;
 
-                Value futilityValue = ss->staticEval + 47 + 171 * !bestMove + 134 * lmrDepth
-                                    + 90 * (ss->staticEval > alpha);
+                Value futilityValue = ss->staticEval + 42 + 151 * !bestMove + 120 * lmrDepth
+                                    + 86 * (ss->staticEval > alpha);
 
                 // Futility pruning: parent node
                 // (*Scaler): Generally, more frequent futility pruning
@@ -3396,7 +3396,7 @@ moves_loop:  // When in check, search starts here
                 // 🤔 パラメーター調整の係数を調整したほうが良いのかも知れないが、
                 // 　  ここ、そんなに大きなEloを持っていないので、調整しても…。
 
-                if (!ss->inCheck && lmrDepth < 11 && futilityValue <= alpha)
+                if (!ss->inCheck && lmrDepth < 13 && futilityValue <= alpha)
                 {
                     if (bestValue <= futilityValue && !is_decisive(bestValue) && !is_win(futilityValue))
                         bestValue = futilityValue;
@@ -3416,7 +3416,7 @@ moves_loop:  // When in check, search starts here
                 // 負のSEEを持つ指し手を枝刈りする
                 // 💡 lmrDepthの2乗に比例するのでこのパラメーターの影響はすごく大きい。
 
-                if (!pos.see_ge(move, -27 * lmrDepth * lmrDepth))
+                if (!pos.see_ge(move, -25 * lmrDepth * lmrDepth))
                     continue;
             }
         }
