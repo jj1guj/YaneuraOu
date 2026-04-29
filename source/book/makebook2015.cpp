@@ -17,6 +17,7 @@
 #include <iomanip>		// std::setprecision()
 #include <numeric>      // std::accumulate()
 #include <chrono>
+#include <unistd.h>     // _exit()
 
 using namespace std;
 
@@ -702,20 +703,17 @@ namespace Book
 				cout << "[TIME] write_book          : " << std::chrono::duration<double>(t1 - t0).count() << " sec" << endl;
 			}
 
-			// write_book完了後、book[2]のメモリを早期解放しプロセス終了時の負荷を軽減。
-			book[2].release_memory();
 			{
 				auto total_end = std::chrono::high_resolution_clock::now();
 				cout << "[TIME] TOTAL               : " << std::chrono::duration<double>(total_end - total_start).count() << " sec" << endl;
 			}
 
-			// 診断用: TOTAL後のデストラクタ負荷を計測
-			auto diag_start = std::chrono::high_resolution_clock::now();
-			book[0].release_memory();
-			book[1].release_memory();
-			auto diag_end = std::chrono::high_resolution_clock::now();
-			cout << "[DIAG] book[0,1] release    : " << std::chrono::duration<double>(diag_end - diag_start).count() << " sec" << endl;
-			cout << "[DIAG] leaving makebook2015" << endl;
+			// mergeコマンド完了。グローバルデストラクタ(Threads.set(0)等)のコストを
+			// スキップするため、_exit()でプロセスを即座に終了させる。
+			// ファイル書き込みは既にClose済みなのでデータロスのリスクはない。
+			std::cout.flush();
+			std::cerr.flush();
+			_exit(0);
 
 		}
 		else if (book_sort) {

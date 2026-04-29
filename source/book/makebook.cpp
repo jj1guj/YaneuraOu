@@ -5,7 +5,6 @@
 #include "book.h"
 #include "../position.h"
 #include <sstream>
-#include <chrono>
 
 using namespace std;
 
@@ -67,16 +66,8 @@ namespace Book
 		is >> token;
 
 		// 2015年ごろに作ったmakebookコマンド
-		{
-			auto cmd_start = std::chrono::high_resolution_clock::now();
-			if (makebook2015(pos, is, token))
-			{
-				auto cmd_end = std::chrono::high_resolution_clock::now();
-				cout << "[DIAG] makebook2015 returned: " << std::chrono::duration<double>(cmd_end - cmd_start).count() << " sec" << endl;
-				cout << "[DIAG] leaving makebook_cmd" << endl;
-				return;
-			}
-		}
+		if (makebook2015(pos, is, token))
+			return;
 
 		// 2025年に作ったmakebook拡張コマンド
 		if (makebook2025(pos, is, token))
