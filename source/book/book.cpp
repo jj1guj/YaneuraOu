@@ -516,19 +516,24 @@ namespace Book
 		}
 		auto wb_t3 = std::chrono::high_resolution_clock::now();
 
-		for (auto& it : vectored_book)
+		auto build_entry_lines = [&](size_t i) -> string
 		{
-			// -- 重複局面の手数違いの局面はスキップする(ファイルに書き出さない)
+			auto& it = vectored_book[i];
 
+			// -- 重複局面の手数違いの局面はスキップする(ファイルに書き出さない)
 			auto sfen = it.first;
 			auto sfen_left = StringExtension::trim_number(sfen); // 末尾にplyがあるはずじゃろ
 			int ply = StringExtension::to_int(sfen.substr(sfen_left.length()), 0);
 			if (book_ply[sfen_left] != ply)
-				continue;
+				return string();
+
+			string out;
+			out.reserve(256);
 
 			// -- このentryを書き出す
-
-			writer.WriteLine("sfen " + it.first /* is sfen string */); // sfen
+			out += "sfen ";
+			out += it.first; // is sfen string
+			out += "\r\n";
 
 			auto& move_list = *it.second;
 
@@ -537,11 +542,67 @@ namespace Book
 
 			// 指し手、相手の応手、そのときの評価値、探索深さ、採択回数
 			for (auto& bp : move_list)
-				if (writer.WriteLine(to_usi_string(bp.move) + ' ' + to_usi_string(bp.ponder) + ' '
-					+ std::to_string(bp.value) + " " + std::to_string(bp.depth) + " " + std::to_string(bp.move_count)).is_not_ok())
+			{
+				out += to_usi_string(bp.move);
+				out += ' ';
+				out += to_usi_string(bp.ponder);
+				out += ' ';
+				out += std::to_string(bp.value);
+				out += " ";
+				out += std::to_string(bp.depth);
+				out += " ";
+				out += std::to_string(bp.move_count);
+				out += "\r\n";
+			}
+
+			return out;
+		};
+
+		if (thread_num > 1 && vectored_book.size() >= thread_num)
+		{
+			const size_t total = vectored_book.size();
+			const size_t chunk_size = size_t(1) << 16; // 64K entries per chunk
+			vector<string> chunk_lines;
+
+			for (size_t chunk_start = 0; chunk_start < total; chunk_start += chunk_size)
+			{
+				const size_t chunk_end = std::min(chunk_start + chunk_size, total);
+				const size_t chunk_len = chunk_end - chunk_start;
+				chunk_lines.assign(chunk_len, string());
+
+				vector<std::thread> workers;
+				workers.reserve(thread_num);
+				for (size_t t = 0; t < thread_num; ++t)
+				{
+					const size_t begin = t * chunk_len / thread_num;
+					const size_t end   = (t + 1) * chunk_len / thread_num;
+					workers.emplace_back([&, begin, end, chunk_start]() {
+						for (size_t ci = begin; ci < end; ++ci)
+							chunk_lines[ci] = build_entry_lines(chunk_start + ci);
+					});
+				}
+				for (auto& th : workers)
+					th.join();
+
+				for (size_t ci = 0; ci < chunk_len; ++ci)
+				{
+					if (!chunk_lines[ci].empty() && writer.Write(chunk_lines[ci]).is_not_ok())
+						return Tools::Result(Tools::ResultCode::FileWriteError);
+
+					progress.check(++counter);
+				}
+			}
+		}
+		else
+		{
+			for (size_t i = 0; i < vectored_book.size(); ++i)
+			{
+				auto lines = build_entry_lines(i);
+				if (!lines.empty() && writer.Write(lines).is_not_ok())
 					return Tools::Result(Tools::ResultCode::FileWriteError);
 
-			progress.check(++counter);
+				progress.check(++counter);
+			}
 		}
 
 		writer.Close();
