@@ -6,6 +6,8 @@
 #include "tt.h"
 #include "usi.h"
 #include "misc.h"
+#include <chrono>
+#include <iostream>
 
 // ファイルの中身を出力する。
 void print_file(const std::string& path)
@@ -50,9 +52,16 @@ int main(int argc, char* argv[])
 
 	USI::loop(argc, argv);
 
-	// 生成して、待機させていたスレッドの停止
+	{
+		auto diag0 = std::chrono::high_resolution_clock::now();
+		std::cout << "[DIAG] USI::loop returned" << std::endl;
 
-	Threads.set(0);
+		// 生成して、待機させていたスレッドの停止
+		Threads.set(0);
+
+		auto diag1 = std::chrono::high_resolution_clock::now();
+		std::cout << "[DIAG] Threads.set(0)       : " << std::chrono::duration<double>(diag1 - diag0).count() << " sec" << std::endl;
+	}
 #else
 	// yaneuraOu.wasm
 	// ここでループしてしまうと、ブラウザのメインスレッドがブロックされてしまうため、コメントアウト

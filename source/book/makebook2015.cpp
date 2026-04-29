@@ -709,6 +709,14 @@ namespace Book
 				cout << "[TIME] TOTAL               : " << std::chrono::duration<double>(total_end - total_start).count() << " sec" << endl;
 			}
 
+			// 診断用: TOTAL後のデストラクタ負荷を計測
+			auto diag_start = std::chrono::high_resolution_clock::now();
+			book[0].release_memory();
+			book[1].release_memory();
+			auto diag_end = std::chrono::high_resolution_clock::now();
+			cout << "[DIAG] book[0,1] release    : " << std::chrono::duration<double>(diag_end - diag_start).count() << " sec" << endl;
+			cout << "[DIAG] leaving makebook2015" << endl;
+
 		}
 		else if (book_sort) {
 			// 定跡のsort
