@@ -615,12 +615,12 @@ namespace Book
 				return BookMovesPtr(new BookMoves(*src));
 			};
 
-			auto upsert_entry = [&](unordered_map<string, MergeEntry>& m, const string& sfen, const BookMovesPtr src) {
+			auto upsert_entry = [&](unordered_map<string, MergeEntry>& m, const string& sfen, BookMovesPtr src) {
 				auto key = make_key(sfen);
 				auto it = m.find(key);
 				if (it == m.end())
 				{
-					m[key] = MergeEntry{ sfen, clone_moves(src) };
+					m[key] = MergeEntry{ sfen, std::move(src) };
 					return;
 				}
 
@@ -633,13 +633,17 @@ namespace Book
 					});
 			};
 
-			unordered_map<string, MergeEntry> entries0, entries1;
-			book[0].foreach([&](string sfen, BookMovesPtr it0) { upsert_entry(entries0, sfen, it0); });
-			book[1].foreach([&](string sfen, BookMovesPtr it1) { upsert_entry(entries1, sfen, it1); });
+			BookType body0 = book[0].steal_book_body();
+			BookType body1 = book[1].steal_book_body();
 
-			// 元bookの内容はentries0/1へ複製済みなのでここで解放しておく。
-			book[0].release_memory();
-			book[1].release_memory();
+			unordered_map<string, MergeEntry> entries0, entries1;
+			for (auto& kv : body0)
+				upsert_entry(entries0, kv.first, std::move(kv.second));
+			for (auto& kv : body1)
+				upsert_entry(entries1, kv.first, std::move(kv.second));
+
+			BookType().swap(body0);
+			BookType().swap(body1);
 
 			for (auto& kv : entries0)
 			{
@@ -652,7 +656,9 @@ namespace Book
 					same_nodes++;
 
 					// 同じ候補手はbook0(第一引数)を優先し、book1にしかない手を追加。
-					auto merged = clone_moves(e0.moves);
+					auto merged = std::move(e0.moves);
+					if (!merged)
+						merged = BookMovesPtr(new BookMoves());
 					it1->second.moves->foreach([&](BookMove& bm)
 						{
 							merged->insert(bm, false);

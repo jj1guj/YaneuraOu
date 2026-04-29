@@ -172,14 +172,27 @@ namespace Book
 	void MemoryBook::release_memory()
 	{
 		std::lock_guard<std::recursive_mutex> lock(mutex_);
-
+		BookType().swap(book_body);
 		if (fs.is_open())
 			fs.close();
-
-		BookType().swap(book_body);
 		on_the_fly = false;
 		book_name.clear();
 		pure_book_name.clear();
+	}
+
+	BookType MemoryBook::steal_book_body()
+	{
+		std::lock_guard<std::recursive_mutex> lock(mutex_);
+		BookType out;
+		out.swap(book_body);
+
+		if (fs.is_open())
+			fs.close();
+		on_the_fly = false;
+		book_name.clear();
+		pure_book_name.clear();
+
+		return out;
 	}
 
 	// [ASYNC] このクラスの持つ指し手集合に対して、それぞれの局面を列挙する時に用いる
