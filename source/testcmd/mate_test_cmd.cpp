@@ -585,7 +585,7 @@ namespace {
 
 			StateListPtr states(new std::deque<StateInfo>(1));
 
-			limits.startTime = now();
+            limits.startTime = now();
 			threads.start_thinking(options, pos, st, limits);
 			threads.wait_for_search_finished(); // 探索の終了を待つ。
 

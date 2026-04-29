@@ -2910,7 +2910,7 @@ Value YaneuraOuWorker::search(Position& pos, Stack* ss, Value alpha, Value beta,
 	// 評価値が非常に低い場合、検索を完全にスキップして qsearch の値を返します。
     // PvNode では、チェックメイトが返されるのを防ぐためのガードが必要です。
 
-    if (!PvNode && eval < alpha - 514 - 294 * depth * depth)
+    if (!PvNode && eval < alpha - 502 - 306 * depth * depth)
         return qsearch<NonPV>(pos, ss, alpha, beta);
 
 	// -----------------------
@@ -2937,15 +2937,14 @@ Value YaneuraOuWorker::search(Position& pos, Stack* ss, Value alpha, Value beta,
         // 💡 depth(残り探索深さ)に応じたfutility margin。
 
 		auto futility_margin = [&](Depth d) {
-            Value futilityMult = 91 - 21 * !ss->ttHit;
+            Value futilityMult = 76 - 21 * !ss->ttHit;
 
             return futilityMult * d                                //
-                 - 2094 * improving * futilityMult / 1024          //
-                 - 1324 * opponentWorsening * futilityMult / 4096  //
-                 + std::abs(correctionValue) / 158105;
+                 - (2686 * improving + 362 * opponentWorsening) * futilityMult / 1024
+                 + std::abs(correctionValue) / 180600;
         };
 
-        if (!ss->ttPv && depth < 14 && eval - futility_margin(depth) >= beta && eval >= beta
+        if (!ss->ttPv && depth < 15 && eval >= beta && eval - futility_margin(depth) >= beta
             && (!ttData.move || ttCapture) && !is_loss(beta) && !is_win(eval))
             return (2 * beta + eval) / 3;
     }
