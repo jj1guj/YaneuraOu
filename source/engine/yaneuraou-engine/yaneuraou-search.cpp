@@ -598,8 +598,7 @@ void update_all_stats(const Position&          pos,
                       SearchedList&            quietsSearched,
                       SearchedList&            capturesSearched,
                       Depth                    depth,
-                      Move                     ttMove,
-                      int                      moveCount);
+                      Move                     ttMove);
 
 
 bool is_shuffling(Move move, Stack* const ss, const Position& pos) {
@@ -4024,10 +4023,10 @@ moves_loop:  // When in check, search starts here
     {
         // 💡 quietな(駒を捕獲しない)best moveなのでkillerとhistoryとcountermovesを更新する。
 
-		update_all_stats(pos, ss, *this, bestMove, prevSq, quietsSearched, capturesSearched, depth,
-                         ttData.move, moveCount);
+        update_all_stats(pos, ss, *this, bestMove, prevSq, quietsSearched, capturesSearched, depth,
+                         ttData.move);
         if (!PvNode)
-            ttMoveHistory << (bestMove == ttData.move ? 809 : -865);
+            ttMoveHistory << (bestMove == ttData.move ? 805 : -787);
     }
 
     // Bonus for prior quiet countermove that caused the fail low
@@ -4041,21 +4040,21 @@ moves_loop:  // When in check, search starts here
 	*/
     else if (!priorCapture && prevSq != SQ_NONE)
     {
-        int bonusScale = -228;
-        bonusScale -= (ss - 1)->statScore / 104;
-        bonusScale += std::min(63 * depth, 508);
-        bonusScale += 184 * ((ss - 1)->moveCount > 8);
-        bonusScale += 143 * (!ss->inCheck && bestValue <= ss->staticEval - 92);
-        bonusScale += 149 * (!(ss - 1)->inCheck && bestValue <= -(ss - 1)->staticEval - 70);
+        int bonusScale = -232;
+        bonusScale -= (ss - 1)->statScore / 108;
+        bonusScale += std::min(59 * depth, 454);
+        bonusScale += 169 * ((ss - 1)->moveCount > 8);
+        bonusScale += 145 * (!ss->inCheck && bestValue <= ss->staticEval - 110);
+        bonusScale += 154 * (!(ss - 1)->inCheck && bestValue <= -(ss - 1)->staticEval - 73);
 
         bonusScale = std::max(bonusScale, 0);
 
-        const int scaledBonus = std::min(144 * depth - 92, 1365) * bonusScale;
+        const int scaledBonus = std::min(135 * depth - 80, 1400) * bonusScale;
 
         update_continuation_histories(ss - 1, pos.piece_on(prevSq), prevSq,
-                                      scaledBonus * 400 / 32768);
+                                      scaledBonus * 221 / 16384);
 
-        mainHistory[~us][((ss - 1)->currentMove).raw()] << scaledBonus * 220 / 32768;
+        mainHistory[~us][((ss - 1)->currentMove).raw()] << scaledBonus * 235 / 32768;
 
 		// TODO : これで合ってるか？あとで検証する。
         if (type_of(pos.piece_on(prevSq)) != PAWN && ((ss - 1)->currentMove).type_of() != PROMOTION)
@@ -4069,7 +4068,7 @@ moves_loop:  // When in check, search starts here
     {
         Piece capturedPiece = pos.captured_piece();
         assert(capturedPiece != NO_PIECE);
-        captureHistory[pos.piece_on(prevSq)][prevSq][type_of(capturedPiece)] << 964;
+        captureHistory[pos.piece_on(prevSq)][prevSq][type_of(capturedPiece)] << 1018;
     }
 
     // ⚠ 将棋ではtable probeを使っていないので、maxValueは使わない。
@@ -4132,10 +4131,11 @@ moves_loop:  // When in check, search starts here
 	if (!ss->inCheck && !(bestMove && pos.capture(bestMove))
         && (bestValue > ss->staticEval) == bool(bestMove))
     {
-        auto bonus = std::clamp(int(bestValue - ss->staticEval) * depth / (bestMove ? 10 : 8),
-                                -CORRECTION_HISTORY_LIMIT / 4, CORRECTION_HISTORY_LIMIT / 4);
+        auto bonus =
+          std::clamp(int(bestValue - ss->staticEval) * depth * (bestMove ? 12 : 17) / 128,
+                     -CORRECTION_HISTORY_LIMIT / 4, CORRECTION_HISTORY_LIMIT / 4);
 
-        update_correction_history(pos, ss, *this, bonus);
+        update_correction_history(pos, ss, *this, 1069 * bonus / 1024);
     }
 
 	// 👉 qsearch()内の末尾にあるassertの文の説明を読むこと。
@@ -4550,7 +4550,7 @@ Value Search::YaneuraOuWorker::qsearch(Position& pos, Stack* ss, Value alpha, Va
         // 💡 futilityの基準となる値をbestValueにmargin値を加算したものとして、
         //     これを下回るようであれば枝刈りする。
 
-        futilityBase = ss->staticEval + 352;
+        futilityBase = ss->staticEval + 328;
 
     }
 
@@ -4702,7 +4702,7 @@ Value Search::YaneuraOuWorker::qsearch(Position& pos, Stack* ss, Value alpha, Va
 					 captureの時の歩損は、歩で取る、同角、同角みたいな局面なのでそこにはあまり意味なさげ。
 			*/
 
-            if (!pos.see_ge(move, -78))
+            if (!pos.see_ge(move, -73))
                 continue;
         }
 
@@ -5014,16 +5014,16 @@ void update_all_stats(const Position&          pos,
                       SearchedList&            quietsSearched,
                       SearchedList&            capturesSearched,
                       Depth                    depth,
-                      Move                     ttMove,
-                      int                      moveCount) {
+                      Move                     ttMove) {
 
 
     CapturePieceToHistory& captureHistory = workerThread.captureHistory;
     Piece                  movedPiece     = pos.moved_piece(bestMove);
     PieceType              capturedPiece;
 
-    int bonus = std::min(121 * depth - 77, 1633) + 375 * (bestMove == ttMove);
-    int malus = std::min(825 * depth - 196, 2159) - 16 * moveCount;
+    int bonus =
+      std::min(128 * depth - 77, 1529) + 353 * (bestMove == ttMove) + (ss - 1)->statScore / 32;
+    int malus = std::min(882 * depth - 204, 2122);
 
     /*
 		📓 Stockfish 14ではcapture_or_promotion()からcapture()に変更された。[2022/3/23]
@@ -5032,13 +5032,17 @@ void update_all_stats(const Position&          pos,
 
     if (!pos.capture_stage(bestMove))
     {
-        update_quiet_histories(pos, ss, workerThread, bestMove, bonus * 881 / 1024);
+        update_quiet_histories(pos, ss, workerThread, bestMove, bonus * 806 / 1024);
 
+        int actualMalus = malus * 1113 / 1024;
         // Decrease stats for all non-best quiet moves
         // 最善でないquietの指し手すべての統計を減少させる
 
         for (Move move : quietsSearched)
-            update_quiet_histories(pos, ss, workerThread, move, -malus * 1083 / 1024);
+        {
+            actualMalus = actualMalus * 977 / 1024;
+            update_quiet_histories(pos, ss, workerThread, move, -actualMalus);
+        }
     }
     else
     {
@@ -5046,7 +5050,7 @@ void update_all_stats(const Position&          pos,
         // 最善手が捕獲する指し手だった場合、その統計を増加させる
 
         capturedPiece = type_of(pos.piece_on(bestMove.to_sq()));
-        captureHistory[movedPiece][bestMove.to_sq()][capturedPiece] << bonus * 1482 / 1024;
+        captureHistory[movedPiece][bestMove.to_sq()][capturedPiece] << bonus * 1286 / 1024;
     }
 
     // Extra penalty for a quiet early move that was not a TT move in
@@ -5059,7 +5063,7 @@ void update_all_stats(const Position&          pos,
     // 💡 Move::null()の場合、Stockfishでは65(移動後の升がSQ_NONEであることを保証している。やねうら王もそう変更した。)
 
     if (prevSq != SQ_NONE && ((ss - 1)->moveCount == 1 + (ss - 1)->ttHit) && !pos.captured_piece())
-        update_continuation_histories(ss - 1, pos.piece_on(prevSq), prevSq, -malus * 614 / 1024);
+        update_continuation_histories(ss - 1, pos.piece_on(prevSq), prevSq, -malus * 616 / 1024);
 
     // Decrease stats for all non-best capture moves
     // 最善の捕獲する指し手以外のすべての手の統計を減少させます
@@ -5075,7 +5079,7 @@ void update_all_stats(const Position&          pos,
 
         movedPiece    = pos.moved_piece(move);
         capturedPiece = type_of(pos.piece_on(move.to_sq()));
-        captureHistory[movedPiece][move.to_sq()][capturedPiece] << -malus * 1397 / 1024;
+        captureHistory[movedPiece][move.to_sq()][capturedPiece] << -malus * 1559 / 1024;
     }
 }
 
