@@ -1929,7 +1929,7 @@ void YaneuraOuWorker::clear() {
 
 	// reductions tableの初期化(これはWorkerごとが持つように変更された)
     for (size_t i = 1; i < reductions.size(); ++i)
-        reductions[i] = int(2809 / 128.0 * std::log(i));
+        reductions[i] = int(2763 / 128.0 * std::log(i));
 
 	// 📝 lowPlyHistoryの初期化は、対局ごとではなく、局面ごと("go"のごと)に変更された。
 
@@ -3279,7 +3279,7 @@ moves_loop:  // When in check, search starts here
         int delta = beta - alpha;
 
         // ⚠ reduction()では、depthを1024倍した値が返ってきている。
-        Depth r = reduction(improving, depth, moveCount, delta);
+        int r = reduction(improving, depth, moveCount, delta);
 
         // Increase reduction for ttPv nodes (*Scaler)
         // Larger values scale well
@@ -3292,7 +3292,7 @@ moves_loop:  // When in check, search starts here
         //   長い持ち時間制限では、より大きい値のほうが望ましい
 
         if (ss->ttPv)
-            r += 946;
+            r += 1013;
 
         // -----------------------
         // Step 14. Pruning at shallow depths
@@ -3598,17 +3598,17 @@ moves_loop:  // When in check, search starts here
         // Pv Nodesに対してreductionを減らす(*Scaler)
 
 		if (ss->ttPv)
-            r -= 2618 + PvNode * 991 + (ttData.value > alpha) * 903
-               + (ttData.depth >= depth) * (978 + cutNode * 1051);
+            r -= 2819 + PvNode * 973 + (ttData.value > alpha) * 905
+               + (ttData.depth >= depth) * (935 + cutNode * 959);
 
         // These reduction adjustments have no proven non-linear scaling
         // これらの減少量調整には、非線形スケーリングの有効性が証明されていません
 
-        r += 843;  // Base reduction offset to compensate for other tweaks
+        r += 691;  // Base reduction offset to compensate for other tweaks
                    // 他の調整を補正するための基準リダクションオフセット
 
-        r -= moveCount * 66;
-        r -= std::abs(correctionValue) / 30450;
+        r -= moveCount * 65;
+        r -= std::abs(correctionValue) / 25600;
 
         // Increase reduction for cut nodes
         // カットノードのreductionを増やす
@@ -3622,13 +3622,13 @@ moves_loop:  // When in check, search starts here
 		*/
 
         if (cutNode)
-            r += 3094 + 1056 * !ttData.move;
+            r += 3611 + 985 * !ttData.move;
 
         // Increase reduction if ttMove is a capture
         // ttMove が捕獲する指し手なら、reductionを増やす
 
         if (ttCapture)
-            r += 1415;
+            r += 1054;
 
         // Increase reduction if next ply has a lot of fail high
         // 次の手でfail highが多い場合、reductionを増やす
@@ -3640,10 +3640,10 @@ moves_loop:  // When in check, search starts here
         // 最初に選ばれた指し手（ttMove）ではreductionを減らす
 
         if (move == ttData.move)
-            r -= 2018;
+            r -= 2239;
 
         if (capture)
-            ss->statScore = 803 * int(PieceValue[pos.captured_piece()]) / 128
+            ss->statScore = 863 * int(PieceValue[pos.captured_piece()]) / 128
                           + captureHistory[movedPiece][move.to_sq()][type_of(pos.captured_piece())];
         else
             // 📊【計測資料 11.】statScoreの計算でcontHist[3]も調べるかどうか。
@@ -3655,7 +3655,7 @@ moves_loop:  // When in check, search starts here
         // Decrease/increase reduction for moves with a good/bad history
         // 良い/悪い履歴を持つ手に対して、reductionを減らす/増やす
 
-        r -= ss->statScore * 794 / 8192;
+        r -= ss->statScore * 428 / 4096;
 
         // Scale up reductions for expected ALL nodes
         if (allNode)
@@ -3726,7 +3726,7 @@ moves_loop:  // When in check, search starts here
                 // Post LMR continuation history updates
                 // LMR後のcontinuation historyの更新
 
-                update_continuation_histories(ss, movedPiece, move.to_sq(), 1365);
+                update_continuation_histories(ss, movedPiece, move.to_sq(), 1426);
             }
         }
 
@@ -3741,13 +3741,13 @@ moves_loop:  // When in check, search starts here
             // ttMoveが存在しない場合、削減を増やします。
 
             if (!ttData.move)
-                r += 1118;
+                r += 1057;
 
             // Note that if expected reduction is high, we reduce search depth here
             // 期待される削減が大きい場合、ここで探索深さを1減らすことに注意してください。
 
 			value = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha,
-                                   newDepth - (r > 3212) - (r > 4784 && newDepth > 2), !cutNode);
+                                   newDepth - (r > 4628) - (r > 5772 && newDepth > 2), !cutNode);
 		}
 
         // For PV nodes only, do a full PV search on the first move or after a fail high,
@@ -4863,7 +4863,7 @@ Value Search::YaneuraOuWorker::qsearch(Position& pos, Stack* ss, Value alpha, Va
 // LMRのreductionの値を計算する。
 int Search::YaneuraOuWorker::reduction(bool i, Depth d, int mn, int delta) const {
     int reductionScale = reductions[d] * reductions[mn];
-    return reductionScale - delta * 757 / rootDelta + !i * reductionScale * 218 / 512 + 1200;
+    return reductionScale - delta * 585 / rootDelta + !i * reductionScale * 206 / 512 + 1133;
 }
 
 // 📝 やねうら王では、下記のelapsed(), elapsed_time()は用いない。
