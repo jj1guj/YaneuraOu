@@ -23,6 +23,15 @@
 
 #include "evaluate_nnue.h"
 
+#if defined(SFNNwoPSQT)
+#ifndef NNUE_SFNN_HAND_BUCKETS
+#define NNUE_SFNN_HAND_BUCKETS 1
+#endif
+#ifndef NNUE_SFNN_KING_BUCKETS
+#define NNUE_SFNN_KING_BUCKETS 9
+#endif
+#endif
+
 namespace YaneuraOu::Eval::NNUE {
 extern int FV_SCALE;
 }
@@ -59,15 +68,6 @@ std::string last_eval_dir = "None";
 
 // 📌 この評価関数で追加したいエンジンオプションはここで追加する。
 void add_options_(OptionsMap& options, ThreadPool& threads) {
-
-#if defined(EVAL_LEARN)
-    // isreadyタイミングで評価関数を読み込まれると、新しい評価関数の変換のために
-    // test evalconvertコマンドを叩きたいのに、その新しい評価関数がないがために
-    // このコマンドの実行前に異常終了してしまう。
-    // そこでこの隠しオプションでisready時の評価関数の読み込みを抑制して、
-    // test evalconvertコマンドを叩く。
-    Options("SkipLoadingEval", Option(false));
-#endif
 
 #if defined(NNUE_EMBEDDING_OFF)
     const char* default_eval_dir = "eval";
@@ -157,15 +157,8 @@ namespace NNUE {
 
 	int FV_SCALE = 16; // 水匠5では24がベストらしいのでエンジンオプション"FV_SCALE"で変更可能にした。
 
-    // 入力特徴量変換器
-	LargePagePtr<FeatureTransformer> feature_transformer;
-
-    // 評価関数
-#if defined(SFNNwoPSQT)
-    AlignedPtr<Network> network[kLayerStacks];
-#else
-    AlignedPtr<Network> network;
-#endif
+    // NNUE評価関数パラメーター（共有メモリまたはローカルメモリ上に配置）
+    SystemWideSharedConstant<NnueNetworks> shared_networks;
 
     // 評価関数ファイル名
     const char* const kFileName = EvalFileDefaultName;
@@ -184,74 +177,69 @@ namespace NNUE {
 namespace {
 	namespace Detail {
 
-		// 評価関数パラメータを初期化する
+		// 評価関数パラメータを読み込む（参照版）
 		template <typename T>
-		void Initialize(AlignedPtr<T>& pointer) {
-			pointer = make_unique_aligned<T>();
+		Tools::Result ReadParameters(std::istream& stream, T& obj) {
+			std::uint32_t header;
+			stream.read(reinterpret_cast<char*>(&header), sizeof(header));
+			if (!stream) return Tools::ResultCode::FileReadError;
+			// hash値、古い評価関数ファイルに対して一致するとは限らないので、警告に変更する。
+			if (header != T::GetHashValue())
+				sync_cout << "info string Warning : nn.bin hash mismatch." << sync_endl;
+			return obj.ReadParameters(stream);
 		}
 
+		// 評価関数パラメータを書き込む（参照版）
 		template <typename T>
-		void Initialize(LargePagePtr<T>& pointer) {
-			// →　メモリはLarge Pageから確保することで高速化する。
-			pointer = make_unique_large_page<T>();
+		bool WriteParameters(std::ostream& stream, const T& obj) {
+			constexpr std::uint32_t header = T::GetHashValue();
+			stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
+			return obj.WriteParameters(stream);
 		}
 
-            // 評価関数パラメータを読み込む
-            template <typename T>
-            Tools::Result ReadParameters(std::istream& stream, const AlignedPtr<T>& pointer) {
-            	std::uint32_t header;
-            	stream.read(reinterpret_cast<char*>(&header), sizeof(header));
-            	if (!stream)                     return Tools::ResultCode::FileReadError;
-            	//if (header != T::GetHashValue()) return Tools::ResultCode::FileMismatch;
-				// 🤔 hash値、古い評価関数ファイルに対して一致するとは限らないので、警告に変更する。
-				if (header != T::GetHashValue())
-                    sync_cout << "info string Warning : nn.bin hash mismatch." << sync_endl;
-            	return pointer->ReadParameters(stream);
-            }
+	}  // namespace Detail
 
-			// 評価関数パラメータを読み込む
-			template <typename T>
-			Tools::Result ReadParameters(std::istream& stream, const LargePagePtr<T>& pointer) {
-				std::uint32_t header;
-				stream.read(reinterpret_cast<char*>(&header), sizeof(header));
-				if (!stream)                     return Tools::ResultCode::FileReadError;
-				// 🤔 hash値、古い評価関数ファイルに対して一致するとは限らないので、警告に変更する。
-				if (header != T::GetHashValue())
-                    sync_cout << "info string Warning : nn.bin hash mismatch." << sync_endl;
-				return pointer->ReadParameters(stream);
-			}
+	// テンポラリにパラメータを読み込み、共有メモリに配置する。
+	// 同じパラメータを持つ他プロセスが既に共有メモリを作成済みなら、そちらを参照する。
+	Tools::Result LoadAndShare(std::istream& stream) {
+		// テンポラリ領域にパラメータを読み込む
+		auto tmp = make_unique_large_page<NnueNetworks>();
 
-			// 評価関数パラメータを書き込む
-            template <typename T>
-            bool WriteParameters(std::ostream& stream, const AlignedPtr<T>& pointer) {
-                constexpr std::uint32_t header = T::GetHashValue();
-                stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
-                return pointer->WriteParameters(stream);
-            }
-
-			// 評価関数パラメータを書き込む
-			template <typename T>
-			bool WriteParameters(std::ostream& stream, const LargePagePtr<T>& pointer) {
-				constexpr std::uint32_t header = T::GetHashValue();
-				stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
-				return pointer->WriteParameters(stream);
-			}
-
-		}  // namespace Detail
-	
-		// 評価関数パラメータを初期化する
-		void Initialize() {
-			Detail::Initialize<FeatureTransformer>(feature_transformer);
-#if defined(SFNNwoPSQT)
-			for (int i = 0; i < kLayerStacks; ++i) {
-				Detail::Initialize<Network>(network[i]);
-			}
-#else
-			Detail::Initialize<Network>(network);
-#endif
+		std::uint32_t hash_value;
+		std::string architecture;
+		Tools::Result result = ReadHeader(stream, &hash_value, &architecture, nullptr);
+		if (result.is_not_ok()) return result;
+		if (hash_value != kHashValue) {
+			sync_cout << "info string Warning: NNUE hash mismatch: expected " << kHashValue
+				<< " got " << hash_value
+				<< " arch_in_file=" << architecture
+				<< " arch_expected=" << GetArchitectureString()
+				<< sync_endl;
 		}
-	
-		}  // namespace
+
+		result = Detail::ReadParameters<FeatureTransformer>(stream, tmp->feature_transformer);
+		if (result.is_not_ok()) {
+			sync_cout << "info string NNUE feature params read failed: " << result.to_string() << sync_endl;
+			return result;
+		}
+		for (int i = 0; i < kLayerStacks; ++i) {
+			result = Detail::ReadParameters<Network>(stream, tmp->network[i]);
+			if (result.is_not_ok()) {
+				sync_cout << "info string NNUE network params read failed at stack " << i << ": " << result.to_string() << sync_endl;
+				return result;
+			}
+		}
+
+		if (!stream || stream.peek() != std::ios::traits_type::eof())
+			return Tools::ResultCode::FileCloseError;
+
+		// 共有メモリに配置（同一ハッシュの共有メモリが既に存在すればそちらを参照）
+		shared_networks = SystemWideSharedConstant<NnueNetworks>(*tmp);
+
+		return Tools::ResultCode::Ok;
+	}
+
+	}  // namespace
     // ヘッダを読み込む
     Tools::Result ReadHeader(std::istream& stream,
         std::uint32_t* hash_value, std::string* architecture, std::uint32_t* version_out) {
@@ -285,67 +273,34 @@ namespace {
 
     	// 評価関数パラメータを読み込む
     	Tools::Result ReadParameters(std::istream& stream) {
-    		std::uint32_t hash_value;
-    		std::string architecture;
-    		Tools::Result result = ReadHeader(stream, &hash_value, &architecture, nullptr);
-    		if (result.is_not_ok()) return result;
-    		if (hash_value != kHashValue) {
-    			// hash check廃止: 警告のみ出力して続行する
-    			sync_cout << "info string Warning: NNUE hash mismatch: expected " << kHashValue
-    				<< " got " << hash_value
-    				<< " arch_in_file=" << architecture
-    				<< " arch_expected=" << GetArchitectureString()
-    				<< sync_endl;
-    		}
-    
-    		result = Detail::ReadParameters<FeatureTransformer>(stream, feature_transformer);
-    		if (result.is_not_ok()) {
-    			sync_cout << "info string NNUE feature params read failed: " << result.to_string() << sync_endl;
-    			return result;
-    		}
-#if defined(SFNNwoPSQT)
-    		for (int i = 0; i < kLayerStacks; ++i) {
-    			result = Detail::ReadParameters<Network>(stream, network[i]);
-    			if (result.is_not_ok()) {
-    				sync_cout << "info string NNUE network params read failed at stack " << i << ": " << result.to_string() << sync_endl;
-    				return result;
-    			}
-    		}
-#else
-    		result = Detail::ReadParameters<Network>(stream, network);
-    		if (result.is_not_ok()) {
-    			sync_cout << "info string NNUE network params read failed: " << result.to_string() << sync_endl;
-    			return result;
-    		}
-#endif
-
-    		if (stream && stream.peek() == std::ios::traits_type::eof())
-    			return Tools::ResultCode::Ok;
-    		else
-    			return Tools::ResultCode::FileCloseError;
+    		return LoadAndShare(stream);
     	}
     // 評価関数パラメータを書き込む
     bool WriteParameters(std::ostream& stream) {
         if (!WriteHeader(stream, kHashValue, GetArchitectureString())) return false;
-        if (!Detail::WriteParameters<FeatureTransformer>(stream, feature_transformer)) return false;
-#if defined(SFNNwoPSQT)
+        if (!Detail::WriteParameters<FeatureTransformer>(stream, networks().feature_transformer)) return false;
         for (int i = 0; i < kLayerStacks; ++i) {
-            if (!Detail::WriteParameters<Network>(stream, network[i])) return false;
+            if (!Detail::WriteParameters<Network>(stream, networks().network[i])) return false;
         }
-#else
-        if (!Detail::WriteParameters<Network>(stream, network)) return false;
-#endif
         return !stream.fail();
     }
 
     // 差分計算ができるなら進める
     static void UpdateAccumulatorIfPossible(const Position& pos) {
-        feature_transformer->UpdateAccumulatorIfPossible(pos);
+        networks().feature_transformer.UpdateAccumulatorIfPossible(pos);
     }
 
 #if defined(SFNNwoPSQT)
+    static_assert(NNUE_SFNN_HAND_BUCKETS == 1 || NNUE_SFNN_HAND_BUCKETS == 64
+        || NNUE_SFNN_HAND_BUCKETS == 256 || NNUE_SFNN_HAND_BUCKETS == 1024,
+        "unsupported NNUE_SFNN_HAND_BUCKETS");
+    static_assert(NNUE_SFNN_KING_BUCKETS == 1 || NNUE_SFNN_KING_BUCKETS == 9 || NNUE_SFNN_KING_BUCKETS == 81,
+        "unsupported NNUE_SFNN_KING_BUCKETS");
+    static_assert(kLayerStacks == NNUE_SFNN_HAND_BUCKETS * NNUE_SFNN_KING_BUCKETS,
+        "LayerStacks must match the SFNN bucket product");
+
     // レイヤースタックの選択。双方の玉の段に応じて9通りに分岐させる。
-    static int stack_index_for_nnue(const Position& pos) {
+    static int king3_by_king3_bucket(const Position& pos) {
         constexpr int kFToIndex[] = { 0, 0, 0, 3, 3, 3, 6, 6, 6 };
         constexpr int kEToIndex[] = { 0, 0, 0, 1, 1, 1, 2, 2, 2 };
         const auto stm = pos.side_to_move();
@@ -354,6 +309,102 @@ namespace {
         const auto f_rank = stm == BLACK ? rank_of(f_king) : rank_of(Inv(f_king));
         const auto e_rank = stm == BLACK ? rank_of(Inv(e_king)) : rank_of(e_king);
         int idx = kFToIndex[f_rank] + kEToIndex[e_rank];
+        if (idx < 0) idx = 0;
+        if (idx > 8) idx = 8;
+        return idx;
+    }
+
+    // レイヤースタックの選択。双方の玉の段に応じて81通りに分岐させる。
+    static int king9_by_king9_bucket(const Position& pos) {
+        const auto stm = pos.side_to_move();
+        const auto f_king = pos.square<KING>(stm);
+        const auto e_king = pos.square<KING>(~stm);
+        int f_rank = int(stm == BLACK ? rank_of(f_king) : rank_of(Inv(f_king)));
+        int e_rank = int(stm == BLACK ? rank_of(Inv(e_king)) : rank_of(e_king));
+        if (f_rank < 0) f_rank = 0;
+        if (f_rank > 8) f_rank = 8;
+        if (e_rank < 0) e_rank = 0;
+        if (e_rank > 8) e_rank = 8;
+        return f_rank * 9 + e_rank;
+    }
+
+    static int hand64_single_bucket(Hand hand) {
+        const int score =
+              hand_count(hand, PAWN)
+            + (hand_count(hand, LANCE) + hand_count(hand, KNIGHT)) * 2
+            + (hand_count(hand, SILVER) + hand_count(hand, GOLD)) * 3
+            + (hand_count(hand, BISHOP) + hand_count(hand, ROOK)) * 5;
+
+        int bucket = (score + 3) / 4;
+        if (bucket < 0) bucket = 0;
+        if (bucket > 7) bucket = 7;
+        return bucket;
+    }
+
+    static int hand256_single_bucket(Hand hand) {
+        int bucket = 0;
+        if (hand_count(hand, PAWN) + hand_count(hand, LANCE) + hand_count(hand, KNIGHT) > 0)
+            bucket |= 1;
+        if (hand_count(hand, SILVER) + hand_count(hand, GOLD) > 0)
+            bucket |= 2;
+        if (hand_count(hand, BISHOP) > 0)
+            bucket |= 4;
+        if (hand_count(hand, ROOK) > 0)
+            bucket |= 8;
+        return bucket;
+    }
+
+    static int hand1024_single_bucket(Hand hand) {
+        int bucket = 0;
+        if (hand_count(hand, PAWN) > 0)
+            bucket |= 1;
+        if (hand_count(hand, LANCE) + hand_count(hand, KNIGHT) > 0)
+            bucket |= 2;
+        if (hand_count(hand, SILVER) + hand_count(hand, GOLD) > 0)
+            bucket |= 4;
+        if (hand_count(hand, BISHOP) > 0)
+            bucket |= 8;
+        if (hand_count(hand, ROOK) > 0)
+            bucket |= 16;
+        return bucket;
+    }
+
+    // 手番側/非手番側の手駒点を8段階ずつに分け、64通りに分岐させる。
+    static int hand64_bucket(const Position& pos) {
+        const auto stm = pos.side_to_move();
+        return hand64_single_bucket(pos.hand_of(stm)) * 8
+            + hand64_single_bucket(pos.hand_of(~stm));
+    }
+
+    static int hand256_bucket(const Position& pos) {
+        const auto stm = pos.side_to_move();
+        return hand256_single_bucket(pos.hand_of(stm)) * 16
+            + hand256_single_bucket(pos.hand_of(~stm));
+    }
+
+    static int hand1024_bucket(const Position& pos) {
+        const auto stm = pos.side_to_move();
+        return hand1024_single_bucket(pos.hand_of(stm)) * 32
+            + hand1024_single_bucket(pos.hand_of(~stm));
+    }
+
+    static int stack_index_for_nnue(const Position& pos) {
+        int idx = 0;
+
+#if NNUE_SFNN_HAND_BUCKETS == 64
+        idx = hand64_bucket(pos);
+#elif NNUE_SFNN_HAND_BUCKETS == 256
+        idx = hand256_bucket(pos);
+#elif NNUE_SFNN_HAND_BUCKETS == 1024
+        idx = hand1024_bucket(pos);
+#endif
+
+#if NNUE_SFNN_KING_BUCKETS == 9
+        idx = idx * 9 + king3_by_king3_bucket(pos);
+#elif NNUE_SFNN_KING_BUCKETS == 81
+        idx = idx * 81 + king9_by_king9_bucket(pos);
+#endif
+
         if (idx < 0) idx = 0;
         if (idx >= kLayerStacks) idx = kLayerStacks - 1;
         return idx;
@@ -367,15 +418,24 @@ namespace {
             return accumulator.score;
         }
 
-        alignas(kCacheLineSize) TransformedFeatureType
-            transformed_features[FeatureTransformer::kBufferSize];
-        feature_transformer->Transform(pos, transformed_features, refresh);
         alignas(kCacheLineSize) char buffer[Network::kBufferSize];
 #if defined(SFNNwoPSQT)
         const auto bucket = stack_index_for_nnue(pos);
-        const auto output = network[bucket]->Propagate(transformed_features, buffer);
+#if defined(USE_AVX512) && defined(NNUE_HAS_COMMON_SHARD_SFNN_ACCUMULATOR_PROPAGATE)
+        networks().feature_transformer.EnsureAccumulator(pos, refresh);
+        const auto output = networks().network[bucket].PropagateFromAccumulator(
+            accumulator.accumulation, pos.side_to_move(), buffer);
 #else
-        const auto output = network->Propagate(transformed_features, buffer);
+        alignas(kCacheLineSize) TransformedFeatureType
+            transformed_features[FeatureTransformer::kBufferSize];
+        networks().feature_transformer.Transform(pos, transformed_features, refresh);
+        const auto output = networks().network[bucket].Propagate(transformed_features, buffer);
+#endif
+#else
+        alignas(kCacheLineSize) TransformedFeatureType
+            transformed_features[FeatureTransformer::kBufferSize];
+        networks().feature_transformer.Transform(pos, transformed_features, refresh);
+        const auto output = networks().network[0].Propagate(transformed_features, buffer);
 #endif
 
         // VALUE_MAX_EVALより大きな値が返ってくるとaspiration searchがfail highして
@@ -463,12 +523,6 @@ void load_eval() {
     if (eval_loaded)
         return;
 
-	// 初期化もここでやる。
-	NNUE::Initialize();
-
-#if defined(EVAL_LEARN)
-    if (!Options["SkipLoadingEval"])
-#endif
     {
         const std::string dir_name = Options["EvalDir"];
     #if !defined(__EMSCRIPTEN__)
