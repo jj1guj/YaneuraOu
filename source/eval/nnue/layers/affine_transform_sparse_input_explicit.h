@@ -347,17 +347,22 @@ public:
                         vqmovun_s16(vqdmulhq_s16(sum0a, sum1a)),
                         vqmovun_s16(vqdmulhq_s16(sum0b, sum1b)));
                     const uint64x2_t transformed64 = vreinterpretq_u64_u8(transformed);
-                    if ((vgetq_lane_u64(transformed64, 0)
-                         | vgetq_lane_u64(transformed64, 1)) == 0)
+                    const std::uint64_t transformedLow = vgetq_lane_u64(transformed64, 0);
+                    const std::uint64_t transformedHigh = vgetq_lane_u64(transformed64, 1);
+                    if ((transformedLow | transformedHigh) == 0)
                         continue;
 
                     const uint32x4_t input32 = vreinterpretq_u32_u8(transformed);
                     const IndexType base = (p * kChunksPerPerspective + chunk) * 4;
 
-                    accumulate(vgetq_lane_u32(input32, 0), base);
-                    accumulate(vgetq_lane_u32(input32, 1), base + 1);
-                    accumulate(vgetq_lane_u32(input32, 2), base + 2);
-                    accumulate(vgetq_lane_u32(input32, 3), base + 3);
+                    if (transformedLow) {
+                        accumulate(vgetq_lane_u32(input32, 0), base);
+                        accumulate(vgetq_lane_u32(input32, 1), base + 1);
+                    }
+                    if (transformedHigh) {
+                        accumulate(vgetq_lane_u32(input32, 2), base + 2);
+                        accumulate(vgetq_lane_u32(input32, 3), base + 3);
+                    }
                 }
             }
 
