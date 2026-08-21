@@ -166,10 +166,30 @@ namespace Eval::NNUE::Layers {
 				return;
 			}
 #endif
-			for (IndexType i = 0; i < kInputDimensions; ++i)
+#if defined(USE_NEON)
+			constexpr IndexType NeonDimensions = kInputDimensions / 8 * 8;
+			const int16x8_t kZero = vdupq_n_s16(0);
+			const int16x8_t kMax = vdupq_n_s16(127);
+			for (IndexType i = 0; i < NeonDimensions; i += 8)
+			{
+				const int16x8_t w = vcombine_s16(
+					vqmovn_s32(vld1q_s32(input + i)),
+					vqmovn_s32(vld1q_s32(input + i + 4)));
+				const int16x8_t sq = vcombine_s16(
+					vmovn_s32(vshrq_n_s32(vmull_s16(vget_low_s16(w), vget_low_s16(w)),
+					                           2 * kWeightScaleBits + 7)),
+					vmovn_s32(vshrq_n_s32(vmull_high_s16(w, w), 2 * kWeightScaleBits + 7)));
+				vst1_u8(sqrOut + i, vqmovun_s16(vminq_s16(sq, kMax)));
+				vst1_u8(clipOut + i, vqmovun_s16(vminq_s16(
+					vshrq_n_s16(vmaxq_s16(w, kZero), kWeightScaleBits), kMax)));
+			}
+#else
+			constexpr IndexType NeonDimensions = 0;
+#endif
+			for (IndexType i = NeonDimensions; i < kInputDimensions; ++i)
 				sqrOut[i] = static_cast<OutputType>(
 					std::min(127ll, ((long long)(input[i]) * input[i]) >> (2 * kWeightScaleBits + 7)));
-			for (IndexType i = 0; i < kInputDimensions; ++i)
+			for (IndexType i = NeonDimensions; i < kInputDimensions; ++i)
 				clipOut[i] = static_cast<OutputType>(
 					std::max(0, std::min(127, input[i] >> kWeightScaleBits)));
 		}
