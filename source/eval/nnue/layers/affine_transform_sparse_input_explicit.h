@@ -352,15 +352,16 @@ public:
                     if ((transformedLow | transformedHigh) == 0)
                         continue;
 
+                    const uint32x4_t input32 = vreinterpretq_u32_u8(transformed);
                     const IndexType base = (p * kChunksPerPerspective + chunk) * 4;
 
                     if (transformedLow) {
-                        accumulate(static_cast<std::uint32_t>(transformedLow), base);
-                        accumulate(static_cast<std::uint32_t>(transformedLow >> 32), base + 1);
+                        accumulate(vgetq_lane_u32(input32, 0), base);
+                        accumulate(vgetq_lane_u32(input32, 1), base + 1);
                     }
                     if (transformedHigh) {
-                        accumulate(static_cast<std::uint32_t>(transformedHigh), base + 2);
-                        accumulate(static_cast<std::uint32_t>(transformedHigh >> 32), base + 3);
+                        accumulate(vgetq_lane_u32(input32, 2), base + 2);
+                        accumulate(vgetq_lane_u32(input32, 3), base + 3);
                     }
                 }
             }
