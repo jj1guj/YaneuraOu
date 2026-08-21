@@ -290,6 +290,80 @@ public:
         }
 #endif
 
+    #if defined(USE_NEON) && defined(SFNNwoPSQT)
+        template <IndexType HalfDimensions, typename AccumulationType>
+        void PropagateSfnnNeonFromAccumulator(const AccumulationType& accumulation,
+                              Color sideToMove,
+                              OutputType* output) const {
+            static_assert(kInputDimensions == HalfDimensions);
+            static_assert(kOutputDimensions == 16);
+            static_assert((HalfDimensions / 2) % 16 == 0);
+
+            constexpr IndexType kChunksPerPerspective = (HalfDimensions / 2) / 16;
+            constexpr IndexType kOutputSimdWidth = sizeof(int32x4_t) / sizeof(OutputType);
+            constexpr IndexType kNumRegs = kOutputDimensions / kOutputSimdWidth;
+            constexpr int shift = 6;
+
+            const int16x8_t zero = vdupq_n_s16(0);
+            const int16x8_t one = vdupq_n_s16(127 * 2);
+            const Color perspectives[2] = {sideToMove, ~sideToMove};
+            const auto biasvec = reinterpret_cast<const int32x4_t*>(biases_);
+            int32x4_t acc[kNumRegs];
+
+            for (IndexType k = 0; k < kNumRegs; ++k)
+                acc[k] = biasvec[k];
+
+            auto accumulate = [&](std::uint32_t inputValue, IndexType inputIndex) {
+                if (!inputValue)
+                    return;
+
+                const int8x16_t in = vreinterpretq_s8_u32(vdupq_n_u32(inputValue));
+                const auto col = reinterpret_cast<const int8x16_t*>(
+                    &weights_[inputIndex * kOutputDimensions * kChunkSize]);
+                for (IndexType k = 0; k < kNumRegs; ++k) {
+    #if defined(USE_NEON_DOTPROD)
+                    Simd::dotprod_m128_add_dpbusd_epi32(acc[k], in, col[k]);
+    #else
+                    Simd::neon_m128_add_dpbusd_epi32(acc[k], in, col[k]);
+    #endif
+                }
+            };
+
+            for (IndexType p = 0; p < 2; ++p) {
+                const auto perspective = perspectives[p];
+                const auto acc0 = reinterpret_cast<const int16x8_t*>(
+                    &accumulation[perspective][0][0]);
+                const auto acc1 = reinterpret_cast<const int16x8_t*>(
+                    &accumulation[perspective][0][HalfDimensions / 2]);
+
+                for (IndexType chunk = 0; chunk < kChunksPerPerspective; ++chunk) {
+                    const int16x8_t sum0a = vshlq_n_s16(
+                        vmaxq_s16(vminq_s16(acc0[chunk * 2], one), zero), shift);
+                    const int16x8_t sum0b = vshlq_n_s16(
+                        vmaxq_s16(vminq_s16(acc0[chunk * 2 + 1], one), zero), shift);
+                    const int16x8_t sum1a = vminq_s16(acc1[chunk * 2], one);
+                    const int16x8_t sum1b = vminq_s16(acc1[chunk * 2 + 1], one);
+                    const uint8x16_t transformed = vcombine_u8(
+                        vqmovun_s16(vqdmulhq_s16(sum0a, sum1a)),
+                        vqmovun_s16(vqdmulhq_s16(sum0b, sum1b)));
+                    const uint32x4_t input32 = vreinterpretq_u32_u8(transformed);
+                    const IndexType base = (p * kChunksPerPerspective + chunk) * 4;
+
+                    accumulate(vgetq_lane_u32(input32, 0), base);
+                    accumulate(vgetq_lane_u32(input32, 1), base + 1);
+                    accumulate(vgetq_lane_u32(input32, 2), base + 2);
+                    accumulate(vgetq_lane_u32(input32, 3), base + 3);
+                }
+            }
+
+            auto outptr = reinterpret_cast<int32x4_t*>(output);
+            for (IndexType k = 0; k < kNumRegs; ++k)
+                outptr[k] = acc[k];
+            for (IndexType out = kOutputDimensions; out < kPaddedOutputDimensions; ++out)
+                output[out] = OutputType{};
+        }
+    #endif
+
         // Forward propagation
         void Propagate(const InputType* input, OutputType* output) const {
 #if defined(USE_WASM_SIMD)
