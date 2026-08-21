@@ -313,13 +313,11 @@ public:
             for (IndexType k = 0; k < kNumRegs; ++k)
                 acc[k] = biasvec[k];
 
-            auto accumulate = [&](std::uint32_t inputValue, IndexType inputIndex) {
+            auto accumulate = [&](std::uint32_t inputValue, const int8x16_t* col) {
                 if (!inputValue)
                     return;
 
                 const int8x16_t in = vreinterpretq_s8_u32(vdupq_n_u32(inputValue));
-                const auto col = reinterpret_cast<const int8x16_t*>(
-                    &weights_[inputIndex * kOutputDimensions * kChunkSize]);
                 for (IndexType k = 0; k < kNumRegs; ++k) {
     #if defined(USE_NEON_DOTPROD)
                     Simd::dotprod_m128_add_dpbusd_epi32(acc[k], in, col[k]);
@@ -354,14 +352,16 @@ public:
 
                     const uint32x4_t input32 = vreinterpretq_u32_u8(transformed);
                     const IndexType base = (p * kChunksPerPerspective + chunk) * 4;
+                    const auto cols = reinterpret_cast<const int8x16_t*>(
+                        &weights_[base * kOutputDimensions * kChunkSize]);
 
                     if (transformedLow) {
-                        accumulate(vgetq_lane_u32(input32, 0), base);
-                        accumulate(vgetq_lane_u32(input32, 1), base + 1);
+                        accumulate(vgetq_lane_u32(input32, 0), cols);
+                        accumulate(vgetq_lane_u32(input32, 1), cols + kNumRegs);
                     }
                     if (transformedHigh) {
-                        accumulate(vgetq_lane_u32(input32, 2), base + 2);
-                        accumulate(vgetq_lane_u32(input32, 3), base + 3);
+                        accumulate(vgetq_lane_u32(input32, 2), cols + kNumRegs * 2);
+                        accumulate(vgetq_lane_u32(input32, 3), cols + kNumRegs * 3);
                     }
                 }
             }
