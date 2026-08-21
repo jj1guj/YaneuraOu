@@ -103,7 +103,7 @@ using vec_t = int16x8_t;
 #define vec_packus_16(a, b) reinterpret_cast<vec_t>(vcombine_u8(vqmovun_s16(a), vqmovun_s16(b)))
 #define vec_zero() \
 	vec_t { 0 }
-static constexpr IndexType kNumRegs = 16;
+static constexpr IndexType kNumRegs = 8;
 
 #else
 #undef VECTOR
