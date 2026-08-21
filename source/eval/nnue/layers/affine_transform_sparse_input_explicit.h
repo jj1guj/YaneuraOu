@@ -346,9 +346,7 @@ public:
                     const uint8x16_t transformed = vcombine_u8(
                         vqmovun_s16(vqdmulhq_s16(sum0a, sum1a)),
                         vqmovun_s16(vqdmulhq_s16(sum0b, sum1b)));
-                    const uint64x2_t transformed64 = vreinterpretq_u64_u8(transformed);
-                    if ((vgetq_lane_u64(transformed64, 0)
-                         | vgetq_lane_u64(transformed64, 1)) == 0)
+                    if (vmaxvq_u8(transformed) == 0)
                         continue;
 
                     const uint32x4_t input32 = vreinterpretq_u32_u8(transformed);
