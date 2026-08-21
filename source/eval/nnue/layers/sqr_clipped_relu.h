@@ -11,6 +11,7 @@
 #include "../nnue_common.h"
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 
 namespace YaneuraOu {
 namespace Eval::NNUE::Layers {
@@ -183,13 +184,31 @@ namespace Eval::NNUE::Layers {
 				vst1_u8(clipOut + i, vqmovun_s16(vminq_s16(
 					vshrq_n_s16(vmaxq_s16(w, kZero), kWeightScaleBits), kMax)));
 			}
+			constexpr IndexType NeonTailDimensions =
+				NeonDimensions + (kInputDimensions - NeonDimensions >= 4 ? 4 : 0);
+			if constexpr (NeonTailDimensions > NeonDimensions)
+			{
+				const int16x4_t w = vqmovn_s32(vld1q_s32(input + NeonDimensions));
+				const int16x4_t sq = vmovn_s32(vshrq_n_s32(
+					vmull_s16(w, w), 2 * kWeightScaleBits + 7));
+				const int16x4_t cl = vmin_s16(
+					vshr_n_s16(vmax_s16(w, vdup_n_s16(0)), kWeightScaleBits),
+					vdup_n_s16(127));
+				const std::uint32_t packedSqr = vget_lane_u32(vreinterpret_u32_u8(
+					vqmovun_s16(vcombine_s16(sq, sq))), 0);
+				const std::uint32_t packedClip = vget_lane_u32(vreinterpret_u32_u8(
+					vqmovun_s16(vcombine_s16(cl, cl))), 0);
+				std::memcpy(sqrOut + NeonDimensions, &packedSqr, sizeof(packedSqr));
+				std::memcpy(clipOut + NeonDimensions, &packedClip, sizeof(packedClip));
+			}
 #else
 			constexpr IndexType NeonDimensions = 0;
+			constexpr IndexType NeonTailDimensions = 0;
 #endif
-			for (IndexType i = NeonDimensions; i < kInputDimensions; ++i)
+			for (IndexType i = NeonTailDimensions; i < kInputDimensions; ++i)
 				sqrOut[i] = static_cast<OutputType>(
 					std::min(127ll, ((long long)(input[i]) * input[i]) >> (2 * kWeightScaleBits + 7)));
-			for (IndexType i = NeonDimensions; i < kInputDimensions; ++i)
+			for (IndexType i = NeonTailDimensions; i < kInputDimensions; ++i)
 				clipOut[i] = static_cast<OutputType>(
 					std::max(0, std::min(127, input[i] >> kWeightScaleBits)));
 		}
