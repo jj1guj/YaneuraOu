@@ -308,13 +308,10 @@ public:
             const int16x8_t one = vdupq_n_s16(127 * 2);
             const Color perspectives[2] = {sideToMove, ~sideToMove};
             const auto biasvec = reinterpret_cast<const int32x4_t*>(biases_);
-            int32x4_t acc0[kNumRegs];
-            int32x4_t acc1[kNumRegs];
+            int32x4_t acc[kNumRegs];
 
-            for (IndexType k = 0; k < kNumRegs; ++k) {
-                acc0[k] = biasvec[k];
-                acc1[k] = vdupq_n_s32(0);
-            }
+            for (IndexType k = 0; k < kNumRegs; ++k)
+                acc[k] = biasvec[k];
 
             auto accumulate = [&](std::uint32_t inputValue, IndexType inputIndex) {
                 if (!inputValue)
@@ -323,12 +320,11 @@ public:
                 const int8x16_t in = vreinterpretq_s8_u32(vdupq_n_u32(inputValue));
                 const auto col = reinterpret_cast<const int8x16_t*>(
                     &weights_[inputIndex * kOutputDimensions * kChunkSize]);
-                auto target = inputIndex & 1 ? acc1 : acc0;
                 for (IndexType k = 0; k < kNumRegs; ++k) {
     #if defined(USE_NEON_DOTPROD)
-                    Simd::dotprod_m128_add_dpbusd_epi32(target[k], in, col[k]);
+                    Simd::dotprod_m128_add_dpbusd_epi32(acc[k], in, col[k]);
     #else
-                    Simd::neon_m128_add_dpbusd_epi32(target[k], in, col[k]);
+                    Simd::neon_m128_add_dpbusd_epi32(acc[k], in, col[k]);
     #endif
                 }
             };
@@ -362,7 +358,7 @@ public:
 
             auto outptr = reinterpret_cast<int32x4_t*>(output);
             for (IndexType k = 0; k < kNumRegs; ++k)
-                outptr[k] = vaddq_s32(acc0[k], acc1[k]);
+                outptr[k] = acc[k];
             for (IndexType out = kOutputDimensions; out < kPaddedOutputDimensions; ++out)
                 output[out] = OutputType{};
         }
