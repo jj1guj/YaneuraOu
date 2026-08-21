@@ -138,11 +138,23 @@ static void affine_transform_unaligned(std::int32_t*       output,
 
         int32x4_t  sum = {biases[i]};
         const auto row = reinterpret_cast<const int8x8_t*>(&weights[offset]);
-        for (IndexType j = 0; j < kNumChunks; ++j)
+		if constexpr (kNumChunks == 2 && kOutputDimensions == 32)
         {
-            int16x8_t product = vmull_s8(inputVector[j * 2], row[j * 2]);
-            product           = vmlal_s8(product, inputVector[j * 2 + 1], row[j * 2 + 1]);
-            sum               = vpadalq_s16(sum, product);
+			int16x8_t product0 = vmull_s8(inputVector[0], row[0]);
+			int16x8_t product1 = vmull_s8(inputVector[2], row[2]);
+			product0           = vmlal_s8(product0, inputVector[1], row[1]);
+			product1           = vmlal_s8(product1, inputVector[3], row[3]);
+			sum                = vpadalq_s16(sum, product0);
+			sum                = vaddq_s32(sum, vpaddlq_s16(product1));
+		}
+		else
+		{
+			for (IndexType j = 0; j < kNumChunks; ++j)
+			{
+				int16x8_t product = vmull_s8(inputVector[j * 2], row[j * 2]);
+				product           = vmlal_s8(product, inputVector[j * 2 + 1], row[j * 2 + 1]);
+				sum               = vpadalq_s16(sum, product);
+			}
         }
 		
         output[i] = sum[0] + sum[1] + sum[2] + sum[3];
