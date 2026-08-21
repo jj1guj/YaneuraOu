@@ -184,6 +184,18 @@ struct SfnnNetwork {
 		return PropagateTail(buf);
 	}
 #endif
+
+#if defined(USE_NEON) && defined(NNUE_HAS_SFNN_NEON_ACCUMULATOR_PROPAGATE)
+	template <typename AccumulationType>
+	const OutputType* PropagateNeonFromAccumulator(const AccumulationType& accumulation,
+	                                               Color sideToMove,
+	                                               char* buffer) const {
+		auto& buf = *reinterpret_cast<Buffer*>(buffer);
+		fc_0.template PropagateSfnnNeonFromAccumulator<kInputDims>(
+		    accumulation, sideToMove, buf.fc_0_out);
+		return PropagateTail(buf);
+	}
+#endif
 };
 
 }  // namespace Eval::NNUE

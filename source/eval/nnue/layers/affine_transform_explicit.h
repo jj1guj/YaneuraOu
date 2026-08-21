@@ -58,7 +58,7 @@ class AffineTransformExplicit {
     }
 
     static constexpr IndexType get_weight_index(IndexType i) {
-#if defined(USE_SSSE3) || defined(USE_NEON_DOTPROD)
+#if defined(USE_SSSE3) || defined(USE_NEON)
         return kOutputDimensions % 4 == 0 ? get_weight_index_scrambled(i) : i;
 #else
         return i;
@@ -111,7 +111,7 @@ class AffineTransformExplicit {
                 }
 #endif
 
-#if defined(USE_SSSE3) || defined(USE_NEON_DOTPROD)
+#if defined(USE_SSSE3) || defined(USE_NEON)
 
                 if constexpr (kOutputDimensions > 1)
                 {
@@ -300,6 +300,37 @@ class AffineTransformExplicit {
                         else
 #endif
 
+#if defined(USE_NEON) && !defined(USE_NEON_DOTPROD)
+                        if constexpr (kOutputDimensions % (sizeof(int32x4_t) / sizeof(OutputType)) == 0)
+                        {
+                                constexpr IndexType kNumChunks = CeilToMultiple<IndexType>(kInputDimensions, 8) / 4;
+                                constexpr IndexType kOutputSimdWidth = sizeof(int32x4_t) / sizeof(OutputType);
+                                constexpr IndexType kNumRegs = kOutputDimensions / kOutputSimdWidth;
+
+                                const auto input32 = reinterpret_cast<const std::uint32_t*>(input);
+                                const auto biasvec = reinterpret_cast<const int32x4_t*>(biases_);
+                                int32x4_t acc[kNumRegs];
+
+                                for (IndexType k = 0; k < kNumRegs; ++k)
+                                        acc[k] = biasvec[k];
+
+                                for (IndexType i = 0; i < kNumChunks; ++i)
+                                {
+                                        const int8x16_t in = vreinterpretq_s8_u32(vdupq_n_u32(input32[i]));
+                                        const auto col = reinterpret_cast<const int8x16_t*>(
+                                                &weights_[i * kOutputDimensions * 4]);
+
+                                        for (IndexType k = 0; k < kNumRegs; ++k)
+                                                Simd::neon_m128_add_dpbusd_epi32(acc[k], in, col[k]);
+                                }
+
+                                auto outptr = reinterpret_cast<int32x4_t*>(output);
+                                for (IndexType k = 0; k < kNumRegs; ++k)
+                                        outptr[k] = acc[k];
+                        }
+                        else
+#endif
+
                         affine_transform_unaligned<kInputDimensions, kPaddedInputDimensions, kOutputDimensions>(
                           output, weights_, biases_, input);
                 }
@@ -329,6 +360,7 @@ class AffineTransformExplicit {
 #define vec_hadd Simd::neon_m128_hadd
 #endif
 
+#if defined(USE_AVX2) || defined(USE_SSSE3) || defined(USE_NEON_DOTPROD)
                         const auto inputVector = reinterpret_cast<const vec_t*>(input);
             static constexpr IndexType kInputSimdWidth = sizeof(vec_t) / sizeof(InputType);
 
@@ -350,6 +382,10 @@ class AffineTransformExplicit {
 #undef vec_set_32
 #undef vec_add_dpbusd_32
 #undef vec_hadd
+#else
+                                                                                                affine_transform_unaligned<kInputDimensions, kPaddedInputDimensions, kOutputDimensions>(
+                                                                                                        output, weights_, biases_, input);
+#endif
                 }
 
 #else

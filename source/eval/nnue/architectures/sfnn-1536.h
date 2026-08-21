@@ -28,6 +28,10 @@ constexpr IndexType kInputDims   = kTransformedFeatureDimensions;
 constexpr IndexType kHidden1Dims = 15;
 constexpr IndexType kHidden2Dims = 32;
 
+#if defined(USE_NEON)
+#define NNUE_HAS_SFNN_NEON_ACCUMULATOR_PROPAGATE
+#endif
+
 using Fc0Layer = Layers::AffineTransformSparseInputExplicit<kInputDims, kHidden1Dims + 1>;
 using NetworkBase = SfnnNetwork<Fc0Layer, kInputDims, kHidden1Dims, kHidden2Dims>;
 

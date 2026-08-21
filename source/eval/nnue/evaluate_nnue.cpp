@@ -710,7 +710,11 @@ namespace {
         alignas(kCacheLineSize) char buffer[Network::kBufferSize];
 #if defined(SFNNwoPSQT)
         const auto bucket = stack_index_for_nnue(pos);
-#if defined(USE_AVX512) && defined(NNUE_HAS_SFNN_ACCUMULATOR_PROPAGATE)
+#if defined(USE_NEON) && defined(NNUE_HAS_SFNN_NEON_ACCUMULATOR_PROPAGATE)
+    networks().feature_transformer.EnsureAccumulator(pos, refresh);
+    const auto output = networks().network[bucket].PropagateNeonFromAccumulator(
+        accumulator.accumulation, pos.side_to_move(), buffer);
+#elif defined(USE_AVX512) && defined(NNUE_HAS_SFNN_ACCUMULATOR_PROPAGATE)
         networks().feature_transformer.EnsureAccumulator(pos, refresh);
         const auto output = networks().network[bucket].PropagateFromAccumulator(
             accumulator.accumulation, pos.side_to_move(), buffer);
