@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -82,6 +84,19 @@ void add_options_(OptionsMap& options, ThreadPool& threads) {
                     return std::nullopt;
                 }));
 
+#if defined(__EMSCRIPTEN__)
+    // 📝 wasmでは評価関数ファイル名をJS側から指定できるようにする。
+    //     JS側はEmscriptenの仮想FSにファイルを書き出したあと、
+    //     "setoption name EvalFile value ..."を送ってくる。
+    // ⚠ load_eval()はwasmのとき、EvalDirが"<internal>"でもOptions["EvalFile"]を
+    //     参照するので、埋め込み版でもこのOptionは必要。
+    Options.add("EvalFile", Option(EvalFileDefaultName, [](const Option&) {
+                    // 評価関数ファイル名の変更に際して、読み込みフラグをクリアする。
+                    eval_loaded = false;
+                    return std::nullopt;
+                }));
+#endif
+
     // NNUEのFV_SCALEの値
     Options.add("FV_SCALE", Option(16, 1, 128, [&](const Option& o) {
                     YaneuraOu::Eval::NNUE::FV_SCALE = int(o);
@@ -108,7 +123,16 @@ void add_options_(OptionsMap& options, ThreadPool& threads) {
 //     const unsigned int         gEmbeddedNNUESize;    // 埋め込まれたファイルのサイズ
 // なお、この方法は Microsoft Visual Studio では動作しません。
 
-#if !defined(_MSC_VER) && !defined(NNUE_EMBEDDING_OFF)
+#if defined(__EMSCRIPTEN__) && !defined(NNUE_EMBEDDING_OFF)
+// 📝 WebAssemblyではincbin.hは使えない。incbin.hはモジュールレベルのinline asmで
+//     データシンボルを置くが、wasmはデータシンボルをtextセクションに置けないため
+//     "data symbols must live in a data section"となる。-fltoではアセンブルが
+//     リンク時まで遅延されるので、コンパイルは通りwasm-ldがSIGABRTで落ちる。
+//     代わりに、パラメーターを文字列リテラルとして持つembedded_nnue.cpp
+//     (script/wasm_build.jsが生成)をリンクする。
+extern const char*       gEmbeddedNNUEData;
+extern const std::size_t gEmbeddedNNUESize;
+#elif !defined(_MSC_VER) && !defined(NNUE_EMBEDDING_OFF)
 INCBIN(EmbeddedNNUE, EvalFileDefaultName);
 #else
 const unsigned char        gEmbeddedNNUEData[1] = { 0x0 };
@@ -143,7 +167,14 @@ namespace {
 	// ⇨  StockfishはNNUEとして大きなnetworkと小さなnetworkがある。
 
 	EmbeddedNNUE get_embedded() {
+#if defined(__EMSCRIPTEN__) && !defined(NNUE_EMBEDDING_OFF)
+		// embedded_nnue.cppは先頭ポインタとサイズしか提供しないので、終端はここで計算する。
+		const auto* data = reinterpret_cast<const unsigned char*>(gEmbeddedNNUEData);
+		return EmbeddedNNUE(data, data + gEmbeddedNNUESize,
+			static_cast<unsigned int>(gEmbeddedNNUESize));
+#else
 		return EmbeddedNNUE(gEmbeddedNNUEData, gEmbeddedNNUEEnd, gEmbeddedNNUESize);
+#endif
 	}
 }
 
@@ -159,12 +190,12 @@ namespace Progress {
 namespace {
 
 	constexpr double kQ16Scale = 65536.0;
-	constexpr int kProgressThresholdCount = Parameters::kProgressValueCount - 1;
+	constexpr int kProgressThresholdCount = NNUE_SFNN_PROGRESS_BUCKETS - 1;
 
 	std::array<std::int64_t, kProgressThresholdCount> make_thresholds_q16() {
 		std::array<std::int64_t, kProgressThresholdCount> thresholds{};
-		for (int i = 1; i < Parameters::kProgressValueCount; ++i) {
-			const double p = double(i) / double(Parameters::kProgressValueCount);
+		for (int i = 1; i < NNUE_SFNN_PROGRESS_BUCKETS; ++i) {
+			const double p = double(i) / double(NNUE_SFNN_PROGRESS_BUCKETS);
 			const double scaled = std::round(std::log(p / (1.0 - p)) * kQ16Scale);
 			const double clamped = std::clamp(
 			    scaled,
@@ -180,7 +211,7 @@ namespace {
 		return thresholds;
 	}
 
-	int progress_0_to_255_from_sum_q16(std::int64_t sum_q16) {
+	int bucket_from_sum_q16(std::int64_t sum_q16) {
 		const auto& thresholds = thresholds_q16();
 		const auto it = std::upper_bound(thresholds.begin(), thresholds.end(), sum_q16);
 		return int(it - thresholds.begin());
@@ -189,18 +220,26 @@ namespace {
 } // namespace
 
 Tools::Result Parameters::ReadParameters(std::istream& stream) {
-	bias_q16_ = read_little_endian<std::int32_t>(stream);
-	read_little_endian<std::int32_t>(stream, &weights_q16_[0][0], kWeightCount);
-	return !stream.fail() ? Tools::ResultCode::Ok : Tools::ResultCode::FileReadError;
+	static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559);
+	static_assert(kWeightCount == 81 * 1548);
+	for (auto& row : weights_q16_)
+		for (auto& weight : row) {
+			const auto bits = read_little_endian<std::uint64_t>(stream);
+			if (stream.fail()) return Tools::ResultCode::FileReadError;
+			double value;
+			std::memcpy(&value, &bits, sizeof(value));
+			// Check the IEEE exponent directly, also with -ffast-math enabled.
+			if ((bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL)
+				return Tools::ResultCode::FileMismatch;
+			weight = std::int32_t(std::clamp(std::round(value * kQ16Scale),
+			    double((std::numeric_limits<std::int32_t>::min)()),
+			    double((std::numeric_limits<std::int32_t>::max)())));
+		}
+	return stream.peek() == std::ios::traits_type::eof()
+	    ? Tools::ResultCode::Ok : Tools::ResultCode::FileMismatch;
 }
 
-bool Parameters::WriteParameters(std::ostream& stream) const {
-	stream.write(reinterpret_cast<const char*>(&bias_q16_), sizeof(bias_q16_));
-	stream.write(reinterpret_cast<const char*>(&weights_q16_[0][0]), sizeof(weights_q16_));
-	return !stream.fail();
-}
-
-int Parameters::Value0To255(const Position& pos) const {
+std::int64_t Parameters::SumQ16(const Position& pos) const {
 	const auto sq_bk = pos.square<KING>(BLACK);
 	const auto sq_wk = Inv(pos.square<KING>(WHITE));
 
@@ -215,7 +254,6 @@ int Parameters::Value0To255(const Position& pos) const {
 		const auto& list0 = pos.eval_list()->piece_list_fb();
 		const auto& list1 = pos.eval_list()->piece_list_fw();
 
-		sum_q16 = bias_q16_;
 		for (int i = 0; i < PIECE_NUMBER_KING; ++i) {
 			sum_q16 += weights_q16_[sq_bk][list0[i]];
 			sum_q16 += weights_q16_[sq_wk][list1[i]];
@@ -228,16 +266,15 @@ int Parameters::Value0To255(const Position& pos) const {
 		st->nnue_progress_valid = true;
 	}
 
-	return progress_0_to_255_from_sum_q16(sum_q16);
+	return sum_q16;
 }
 
 int Parameters::BucketIndex(const Position& pos, int bucket_count) const {
 	if (bucket_count <= 1)
 		return 0;
 
-	const int progress = Value0To255(pos);
-	const int bucket = progress * bucket_count / kProgressValueCount;
-	return std::clamp(bucket, 0, bucket_count - 1);
+	ASSERT_LV1(bucket_count == NNUE_SFNN_PROGRESS_BUCKETS);
+	return bucket_from_sum_q16(SumQ16(pos));
 }
 
 } // namespace Progress
@@ -248,6 +285,18 @@ int Parameters::BucketIndex(const Position& pos, int bucket_count) const {
 
     // 評価関数ファイル名
     const char* const kFileName = EvalFileDefaultName;
+
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+    static std::string Nn16Architecture(std::uint32_t qb) {
+        return "ModelType=SFNNWithoutPsqt;Features=" + FeatureTransformer::GetStructureString()
+            + ",Network=SFNN-" + std::to_string(Network::kInputDims)
+            + "{LayerStack=" + std::to_string(kLayerStacks)
+            + "};FCWeightBits=16;QB=" + std::to_string(qb)
+            + ";H1=" + std::to_string(Network::kHidden1Dims)
+            + ";Skip=" + std::to_string(int(Network::kUseShortcut))
+            + ";H2=" + std::to_string(Network::kHidden2Dims);
+    }
+#endif
 
     // 評価関数の構造を表す文字列を取得する
     std::string GetArchitectureString() {
@@ -287,7 +336,7 @@ namespace {
 
 	// テンポラリにパラメータを読み込み、共有メモリに配置する。
 	// 同じパラメータを持つ他プロセスが既に共有メモリを作成済みなら、そちらを参照する。
-	Tools::Result LoadAndShare(std::istream& stream) {
+	Tools::Result LoadAndShare(std::istream& stream, [[maybe_unused]] std::string* failed_file) {
 		// テンポラリ領域にパラメータを読み込む
 		auto tmp = make_unique_large_page<NnueNetworks>();
 
@@ -295,6 +344,20 @@ namespace {
 		std::string architecture;
 		Tools::Result result = ReadHeader(stream, &hash_value, &architecture, nullptr);
 		if (result.is_not_ok()) return result;
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+        const auto qb = read_little_endian<std::uint32_t>(stream);
+        if (!stream) return Tools::ResultCode::FileReadError;
+        for (auto& network : tmp->network)
+            if (!network.SetWeightScale(qb)) {
+                sync_cout << "info string Invalid nn16 QB: " << qb << sync_endl;
+                return Tools::ResultCode::FileMismatch;
+            }
+        if (hash_value != kHashValue || architecture != Nn16Architecture(qb)) {
+            sync_cout << "info string nn16 architecture mismatch: " << architecture
+                      << " expected " << Nn16Architecture(qb) << sync_endl;
+            return Tools::ResultCode::FileMismatch;
+        }
+#endif
 		if (hash_value != kHashValue) {
 			sync_cout << "info string Warning: NNUE hash mismatch: expected " << kHashValue
 				<< " got " << hash_value
@@ -309,9 +372,18 @@ namespace {
 			return result;
 		}
 #if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
-		result = Detail::ReadParameters<Progress::Parameters>(stream, tmp->progress);
+		const std::string eval_dir = Options["EvalDir"];
+		const auto progress_path = Path::Combine(
+		    Path::Combine(Directory::GetBinaryFolder(), eval_dir), "progress.bin");
+		std::ifstream progress_stream(progress_path, std::ios::binary);
+		sync_cout << "info string loading progress file : " << progress_path << sync_endl;
+		result = progress_stream.is_open()
+		    ? tmp->progress.ReadParameters(progress_stream)
+		    : Tools::Result(Tools::ResultCode::FileNotFound);
 		if (result.is_not_ok()) {
-			sync_cout << "info string NNUE progress params read failed: " << result.to_string() << sync_endl;
+			if (failed_file) *failed_file = progress_path;
+			sync_cout << "info string NNUE progress params read failed: " << progress_path
+			          << " : " << result.to_string() << sync_endl;
 			return result;
 		}
 #endif
@@ -365,16 +437,20 @@ namespace {
     }
 
     	// 評価関数パラメータを読み込む
-    	Tools::Result ReadParameters(std::istream& stream) {
-    		return LoadAndShare(stream);
-    	}
+    Tools::Result ReadParameters(std::istream& stream, std::string* failed_file) {
+        return LoadAndShare(stream, failed_file);
+    }
     // 評価関数パラメータを書き込む
     bool WriteParameters(std::ostream& stream) {
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+        const auto qb = networks().network[0].weight_scale;
+        if (!WriteHeader(stream, kHashValue, Nn16Architecture(qb))) return false;
+        for (int i = 0; i < 4; ++i)
+            stream.put(static_cast<char>((qb >> (8 * i)) & 255));
+#else
         if (!WriteHeader(stream, kHashValue, GetArchitectureString())) return false;
-        if (!Detail::WriteParameters<FeatureTransformer>(stream, networks().feature_transformer)) return false;
-#if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
-        if (!Detail::WriteParameters<Progress::Parameters>(stream, networks().progress)) return false;
 #endif
+        if (!Detail::WriteParameters<FeatureTransformer>(stream, networks().feature_transformer)) return false;
         for (int i = 0; i < kLayerStacks; ++i) {
             if (!Detail::WriteParameters<Network>(stream, networks().network[i])) return false;
         }
@@ -743,7 +819,12 @@ namespace {
         // しかし、教師生成時などdepth固定で探索するときに探索から戻ってこなくなるので
         // そのスレッドの計算時間を無駄にする。またdepth固定対局でtime-outするようになる。
 
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+        auto score = static_cast<Value>(std::clamp<std::int64_t>(
+            output[0] / FV_SCALE, -VALUE_MAX_EVAL, VALUE_MAX_EVAL));
+#else
         auto score = static_cast<Value>(output[0] / FV_SCALE);
+#endif
 
         // 1) ここ、下手にclipすると学習時には影響があるような気もするが…。
         // 2) accumulator.scoreは、差分計算の時に用いないので書き換えて問題ない。
@@ -824,16 +905,25 @@ void load_eval() {
 		// WASM
         const std::string file_name = Options["EvalFile"];
     #endif
+        std::string failed_file = file_name;
         const Tools::Result result = [&] {
             if (dir_name != "<internal>") {
+            #if !defined(__EMSCRIPTEN__)
                 auto abs_eval_path = Path::Combine(Directory::GetBinaryFolder(), dir_name);
+            #else
+                // 📝 wasmでは評価関数ファイルはEmscriptenの仮想FS上にある。
+                //     Directory::GetBinaryFolder()はホスト側のパスを返すので前置せず、
+                //     EvalDirをそのまま仮想FS上のパスとして扱う。
+                auto abs_eval_path = dir_name;
+            #endif
                 const std::string file_path = Path::Combine(abs_eval_path, file_name);
+                failed_file = file_path;
                 std::ifstream stream(file_path, std::ios::binary);
                 sync_cout << "info string loading eval file : " << file_path << sync_endl;
 				if (!stream.is_open())
 					return Tools::Result(Tools::ResultCode::FileNotFound);
 
-                return NNUE::ReadParameters(stream);
+                return NNUE::ReadParameters(stream, &failed_file);
             }
             else {
                 // C++ way to prepare a buffer for a memory stream
@@ -853,7 +943,7 @@ void load_eval() {
                 std::istream stream(&buffer);
                 sync_cout << "info string loading eval file : <internal>" << sync_endl;
 
-                return NNUE::ReadParameters(stream);
+                return NNUE::ReadParameters(stream, &failed_file);
             }
         }();
 
@@ -862,7 +952,7 @@ void load_eval() {
         if (result.is_not_ok())
         {
             // 読み込みエラーのとき終了してくれないと困る。
-            sync_cout << "Error! : failed to read " << file_name << " : " << result.to_string() << sync_endl;
+            sync_cout << "Error! : failed to read " << failed_file << " : " << result.to_string() << sync_endl;
             Tools::exit();
         }
 

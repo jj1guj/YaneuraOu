@@ -560,10 +560,16 @@ if SFNN:
     )
 
     header += f"""
+        #if !defined(ENABLE_SFNN_16BIT_WEIGHT)
         {sfnn_accumulator_propagate_macro}
+        #endif
 
         using Fc0Layer = {fc_0_type};
+        #if defined(ENABLE_SFNN_16BIT_WEIGHT)
+        using NetworkBase = SfnnNetwork16<kInputDims, kHidden1Dims, kHidden2Dims, kUseShortcut>;
+        #else
         using NetworkBase = SfnnNetwork<Fc0Layer, kInputDims, kHidden1Dims, kHidden2Dims, kUseShortcut>;
+        #endif
 
         struct Network : NetworkBase {{
             static std::string GetStructureString() {{

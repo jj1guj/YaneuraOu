@@ -9,6 +9,9 @@
 #if defined(EVAL_NNUE)
 
 #include "../nnue_common.h"
+#if defined(ENABLE_SFNN_16BIT_WEIGHT)
+#include "sfnn_network_16.h"
+#endif
 #include "../layers/affine_transform_common_shard_input_explicit.h"
 #include "../layers/affine_transform_explicit.h"
 #include "../layers/affine_transform_sparse_input_explicit.h"
