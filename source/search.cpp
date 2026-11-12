@@ -1,5 +1,10 @@
 ﻿#include "search.h"
+
+#include <algorithm>
+#include <cstdint>
 #include "evaluate.h"
+#include "misc.h"
+#include "types.h"
 
 namespace YaneuraOu {
 

@@ -3,6 +3,8 @@
 
 #include "../../config.h"
 #if defined(YANEURAOU_ENGINE_DEEP)
+
+#include <mutex>
 #include "../../position.h"
 #include "../../mate/mate.h"
 
@@ -59,6 +61,9 @@ public:
 	// 各探索スレッドは探索開始時に(nn_forward()の呼び出しまでに)、この関数を呼び出してスレッドとGPUとを紐付けないといけない。
 	void set_device() { nn->set_device(gpu_id); }
 
+	// 同一デバイスのスレッド間でバッチ収集を直列化する。
+	std::unique_lock<std::mutex> acquire_gather_lock() { return std::unique_lock<std::mutex>(mutex_gather); }
+
 	// やねうら王では、スレッドの生成～解体はThreadクラスが行うので、これらはコメントアウト。
 
 	//	void Run();
@@ -113,6 +118,7 @@ private:
 
 	// ↑のnnにアクセスする時のmutex
 	std::mutex mutex_gpu;
+	std::mutex mutex_gather;
 
 	// --- やねうら王独自拡張
 
@@ -172,7 +178,7 @@ struct BatchElement {
 #endif
 
 #if defined(ENABLE_NN_CACHE)
-	Key policy_value_cache_key; // NN推論結果cache用。HASH_KEY_BITSに応じたKey型。
+	HASH_KEY policy_value_cache_key; // NN推論結果cache用。HASH_KEY_BITSに応じたKey型。
 #endif
 
 	// 通常の探索では、このポインターはNodeVisitor::value_win を指している。
@@ -210,7 +216,7 @@ public:
 		policy_value_batch = new BatchElement[policy_value_batch_maxsize];
 
 #ifdef MAKE_BOOK
-		policy_value_book_key = new Key[policy_value_batch_maxsize];
+		policy_value_book_key = new HASH_KEY[policy_value_batch_maxsize];
 #endif
 	}
 
@@ -335,7 +341,7 @@ private:
 	BatchElement* policy_value_batch;
 
 #ifdef MAKE_BOOK
-	Key* policy_value_book_key;
+	HASH_KEY* policy_value_book_key;
 #endif
 
 	// features1[],features2[],policy_value_batch[],policy_value_book_key[],の次に使用するindexを示している。

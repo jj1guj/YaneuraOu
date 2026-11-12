@@ -1,4 +1,5 @@
 ﻿#include "../../config.h"
+#include "../../extra/tools.h"
 
 //
 // Apery WCSC26の評価関数バイナリを読み込むための仕組み。
@@ -132,8 +133,8 @@ namespace Eval {
 		// また、eval_convert()に渡している引数のinputとoutputを入れ替えるとファイルに書き出すことが出来る。EvalIOマジ、っょぃ。
         auto make_name = [&](std::string filename) {
             auto eval_dir      = Options["EvalDir"];
-            auto abs_eval_path = Path::Combine(Directory::GetBinaryFolder(), eval_dir);
-            return Path::Combine(abs_eval_path, filename);
+            auto abs_eval_path = CommandLine::get_binary_directory() / path_from_utf8(std::string(eval_dir));
+            return (abs_eval_path / path_from_utf8(filename)).u8string();
         };
 		auto input = EvalIO::EvalInfo::build_kppt32(make_name(KK_BIN), make_name(KKP_BIN), make_name(KPP_BIN));
 		auto output = EvalIO::EvalInfo::build_kppt32((void*)kk, (void*)kkp, (void*)kpp);
@@ -510,7 +511,7 @@ namespace Eval {
 	void EvalHash_Clear() { g_evalTable.clear(Threads); };
 
 	// prefetchする関数も用意しておく。
-	void prefetch_evalhash(const Key key)
+	void prefetch_evalhash(const u64 key)
 	{
 		prefetch(g_evalTable[key]);
 	}
@@ -843,7 +844,7 @@ namespace Eval {
 
 #if defined ( USE_EVAL_HASH )
 		// 局面のhash key
-		const Key key = pos.key();
+		const HASH_KEY key = pos.key();
 
 		// evaluate hash tableにはあるかも。
 

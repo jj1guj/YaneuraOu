@@ -1,6 +1,7 @@
 ﻿// NNUE評価関数の計算に関するコード
 
 #include "../../config.h"
+#include "../../extra/tools.h"
 
 #if defined(EVAL_NNUE)
 
@@ -129,9 +130,9 @@ void add_options_(OptionsMap& options, ThreadPool& threads) {
 //     "data symbols must live in a data section"となる。-fltoではアセンブルが
 //     リンク時まで遅延されるので、コンパイルは通りwasm-ldがSIGABRTで落ちる。
 //     代わりに、パラメーターを文字列リテラルとして持つembedded_nnue.cpp
-//     (script/wasm_build.jsが生成)をリンクする。
+//     (tools/build/wasm_build.jsが生成)をリンクする。
 extern const char*       gEmbeddedNNUEData;
-extern const std::size_t gEmbeddedNNUESize;
+extern const YaneuraOu::usize gEmbeddedNNUESize;
 #elif !defined(_MSC_VER) && !defined(NNUE_EMBEDDING_OFF)
 INCBIN(EmbeddedNNUE, EvalFileDefaultName);
 #else
@@ -192,26 +193,26 @@ namespace {
 	constexpr double kQ16Scale = 65536.0;
 	constexpr int kProgressThresholdCount = NNUE_SFNN_PROGRESS_BUCKETS - 1;
 
-	std::array<std::int64_t, kProgressThresholdCount> make_thresholds_q16() {
-		std::array<std::int64_t, kProgressThresholdCount> thresholds{};
+	std::array<i64, kProgressThresholdCount> make_thresholds_q16() {
+		std::array<i64, kProgressThresholdCount> thresholds{};
 		for (int i = 1; i < NNUE_SFNN_PROGRESS_BUCKETS; ++i) {
 			const double p = double(i) / double(NNUE_SFNN_PROGRESS_BUCKETS);
 			const double scaled = std::round(std::log(p / (1.0 - p)) * kQ16Scale);
 			const double clamped = std::clamp(
 			    scaled,
-			    double((std::numeric_limits<std::int64_t>::min)()),
-			    double((std::numeric_limits<std::int64_t>::max)()));
-			thresholds[i - 1] = std::int64_t(clamped);
+			    double((std::numeric_limits<i64>::min)()),
+			    double((std::numeric_limits<i64>::max)()));
+			thresholds[i - 1] = i64(clamped);
 		}
 		return thresholds;
 	}
 
-	const std::array<std::int64_t, kProgressThresholdCount>& thresholds_q16() {
+	const std::array<i64, kProgressThresholdCount>& thresholds_q16() {
 		static const auto thresholds = make_thresholds_q16();
 		return thresholds;
 	}
 
-	int bucket_from_sum_q16(std::int64_t sum_q16) {
+	int bucket_from_sum_q16(i64 sum_q16) {
 		const auto& thresholds = thresholds_q16();
 		const auto it = std::upper_bound(thresholds.begin(), thresholds.end(), sum_q16);
 		return int(it - thresholds.begin());
@@ -231,20 +232,20 @@ Tools::Result Parameters::ReadParameters(std::istream& stream) {
 			// Check the IEEE exponent directly, also with -ffast-math enabled.
 			if ((bits & 0x7ff0000000000000ULL) == 0x7ff0000000000000ULL)
 				return Tools::ResultCode::FileMismatch;
-			weight = std::int32_t(std::clamp(std::round(value * kQ16Scale),
-			    double((std::numeric_limits<std::int32_t>::min)()),
-			    double((std::numeric_limits<std::int32_t>::max)())));
+			weight = i32(std::clamp(std::round(value * kQ16Scale),
+			    double((std::numeric_limits<i32>::min)()),
+			    double((std::numeric_limits<i32>::max)())));
 		}
 	return stream.peek() == std::ios::traits_type::eof()
 	    ? Tools::ResultCode::Ok : Tools::ResultCode::FileMismatch;
 }
 
-std::int64_t Parameters::SumQ16(const Position& pos) const {
+i64 Parameters::SumQ16(const Position& pos) const {
 	const auto sq_bk = pos.square<KING>(BLACK);
 	const auto sq_wk = Inv(pos.square<KING>(WHITE));
 
 	auto* st = pos.state();
-	std::int64_t sum_q16 = 0;
+	i64 sum_q16 = 0;
 	if (st->nnue_progress_valid
 	    && st->nnue_progress_key == pos.key()
 	    && st->nnue_progress_sq_bk == sq_bk
@@ -287,7 +288,7 @@ int Parameters::BucketIndex(const Position& pos, int bucket_count) const {
     const char* const kFileName = EvalFileDefaultName;
 
 #if defined(ENABLE_SFNN_16BIT_WEIGHT)
-    static std::string Nn16Architecture(std::uint32_t qb) {
+    static std::string Nn16Architecture(u32 qb) {
         return "ModelType=SFNNWithoutPsqt;Features=" + FeatureTransformer::GetStructureString()
             + ",Network=SFNN-" + std::to_string(Network::kInputDims)
             + "{LayerStack=" + std::to_string(kLayerStacks)
@@ -315,7 +316,7 @@ namespace {
 		// 評価関数パラメータを読み込む（参照版）
 		template <typename T>
 		Tools::Result ReadParameters(std::istream& stream, T& obj) {
-			std::uint32_t header;
+			u32 header;
 			stream.read(reinterpret_cast<char*>(&header), sizeof(header));
 			if (!stream) return Tools::ResultCode::FileReadError;
 			// hash値、古い評価関数ファイルに対して一致するとは限らないので、警告に変更する。
@@ -327,7 +328,7 @@ namespace {
 		// 評価関数パラメータを書き込む（参照版）
 		template <typename T>
 		bool WriteParameters(std::ostream& stream, const T& obj) {
-			constexpr std::uint32_t header = T::GetHashValue();
+			constexpr u32 header = T::GetHashValue();
 			stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
 			return obj.WriteParameters(stream);
 		}
@@ -340,12 +341,12 @@ namespace {
 		// テンポラリ領域にパラメータを読み込む
 		auto tmp = make_unique_large_page<NnueNetworks>();
 
-		std::uint32_t hash_value;
+		u32 hash_value;
 		std::string architecture;
 		Tools::Result result = ReadHeader(stream, &hash_value, &architecture, nullptr);
 		if (result.is_not_ok()) return result;
 #if defined(ENABLE_SFNN_16BIT_WEIGHT)
-        const auto qb = read_little_endian<std::uint32_t>(stream);
+        const auto qb = read_little_endian<u32>(stream);
         if (!stream) return Tools::ResultCode::FileReadError;
         for (auto& network : tmp->network)
             if (!network.SetWeightScale(qb)) {
@@ -373,15 +374,14 @@ namespace {
 		}
 #if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
 		const std::string eval_dir = Options["EvalDir"];
-		const auto progress_path = Path::Combine(
-		    Path::Combine(Directory::GetBinaryFolder(), eval_dir), "progress.bin");
+		const auto progress_path = CommandLine::get_binary_directory() / path_from_utf8(eval_dir) / "progress.bin";
 		std::ifstream progress_stream(progress_path, std::ios::binary);
 		sync_cout << "info string loading progress file : " << progress_path << sync_endl;
 		result = progress_stream.is_open()
 		    ? tmp->progress.ReadParameters(progress_stream)
 		    : Tools::Result(Tools::ResultCode::FileNotFound);
 		if (result.is_not_ok()) {
-			if (failed_file) *failed_file = progress_path;
+			if (failed_file) *failed_file = progress_path.u8string();
 			sync_cout << "info string NNUE progress params read failed: " << progress_path
 			          << " : " << result.to_string() << sync_endl;
 			return result;
@@ -407,8 +407,8 @@ namespace {
 	}  // namespace
     // ヘッダを読み込む
     Tools::Result ReadHeader(std::istream& stream,
-        std::uint32_t* hash_value, std::string* architecture, std::uint32_t* version_out) {
-        std::uint32_t version = 0, size = 0;
+        u32* hash_value, std::string* architecture, u32* version_out) {
+        u32 version = 0, size = 0;
         stream.read(reinterpret_cast<char*>(&version), sizeof(version));
         stream.read(reinterpret_cast<char*>(hash_value), sizeof(*hash_value));
         stream.read(reinterpret_cast<char*>(&size), sizeof(size));
@@ -427,10 +427,10 @@ namespace {
 
     // ヘッダを書き込む
     bool WriteHeader(std::ostream& stream,
-        std::uint32_t hash_value, const std::string& architecture) {
+        u32 hash_value, const std::string& architecture) {
         stream.write(reinterpret_cast<const char*>(&kVersion), sizeof(kVersion));
         stream.write(reinterpret_cast<const char*>(&hash_value), sizeof(hash_value));
-        const std::uint32_t size = static_cast<std::uint32_t>(architecture.size());
+        const u32 size = static_cast<u32>(architecture.size());
         stream.write(reinterpret_cast<const char*>(&size), sizeof(size));
         stream.write(architecture.data(), size);
         return !stream.fail();
@@ -820,7 +820,7 @@ namespace {
         // そのスレッドの計算時間を無駄にする。またdepth固定対局でtime-outするようになる。
 
 #if defined(ENABLE_SFNN_16BIT_WEIGHT)
-        auto score = static_cast<Value>(std::clamp<std::int64_t>(
+        auto score = static_cast<Value>(std::clamp<i64>(
             output[0] / FV_SCALE, -VALUE_MAX_EVAL, VALUE_MAX_EVAL));
 #else
         auto score = static_cast<Value>(output[0] / FV_SCALE);
@@ -828,7 +828,7 @@ namespace {
 
         // 1) ここ、下手にclipすると学習時には影響があるような気もするが…。
         // 2) accumulator.scoreは、差分計算の時に用いないので書き換えて問題ない。
-        score = Math::clamp(score, -VALUE_MAX_EVAL, VALUE_MAX_EVAL);
+        score = std::clamp(score, -VALUE_MAX_EVAL, VALUE_MAX_EVAL);
 
         accumulator.score = score;
         accumulator.computed_score = true;
@@ -885,7 +885,7 @@ void EvalHash_Resize(size_t mbSize) { g_evalTable.resize(mbSize); }
 void EvalHash_Clear() { g_evalTable.clear(); };
 
 // prefetchする関数も用意しておく。
-void prefetch_evalhash(const Key key) {
+void prefetch_evalhash(const u64 key) {
     constexpr auto mask = ~((u64)0x1f);
     prefetch((void*)((u64)g_evalTable[key] & mask));
 }
@@ -909,15 +909,15 @@ void load_eval() {
         const Tools::Result result = [&] {
             if (dir_name != "<internal>") {
             #if !defined(__EMSCRIPTEN__)
-                auto abs_eval_path = Path::Combine(Directory::GetBinaryFolder(), dir_name);
+                auto abs_eval_path = CommandLine::get_binary_directory() / path_from_utf8(dir_name);
             #else
                 // 📝 wasmでは評価関数ファイルはEmscriptenの仮想FS上にある。
-                //     Directory::GetBinaryFolder()はホスト側のパスを返すので前置せず、
+                //     CommandLine::get_binary_directory()はホスト側のパスを返すので前置せず、
                 //     EvalDirをそのまま仮想FS上のパスとして扱う。
-                auto abs_eval_path = dir_name;
+                auto abs_eval_path = path_from_utf8(dir_name);
             #endif
-                const std::string file_path = Path::Combine(abs_eval_path, file_name);
-                failed_file = file_path;
+                const auto file_path = abs_eval_path / path_from_utf8(file_name);
+                failed_file = file_path.u8string();
                 std::ifstream stream(file_path, std::ios::binary);
                 sync_cout << "info string loading eval file : " << file_path << sync_endl;
 				if (!stream.is_open())
@@ -928,7 +928,7 @@ void load_eval() {
             else {
                 // C++ way to prepare a buffer for a memory stream
                 class MemoryBuffer : public std::basic_streambuf<char> {
-                    public: MemoryBuffer(char* p, size_t n) {
+                    public: MemoryBuffer(char* p, usize n) {
                         std::streambuf::setg(p, p, p + n);
                         std::streambuf::setp(p, p + n);
                     }
@@ -938,7 +938,7 @@ void load_eval() {
 
                 MemoryBuffer buffer(
                               const_cast<char*>(reinterpret_cast<const char*>(embedded.data)),
-                              size_t(embedded.size));
+                              usize(embedded.size));
 
                 std::istream stream(&buffer);
                 sync_cout << "info string loading eval file : <internal>" << sync_endl;
@@ -988,7 +988,7 @@ Value evaluate(const Position& pos) {
 
 #if defined(USE_EVAL_HASH)
     // evaluate hash tableにはあるかも。
-    const Key key = pos.state()->key();
+    const HASH_KEY key = pos.state()->key();
     ScoreKeyValue entry = *g_evalTable[key];
     entry.decode();
     if (entry.key == key) {

@@ -1,9 +1,14 @@
-﻿#include <iostream>
+﻿#include <algorithm>
+#include <iostream>
 #include <sstream>
 #include <cstring> // std::memset()
 #include <stack>
 
 #include "position.h"
+#include "extra/tools.h"
+#if defined(NNUE_FT_SPARSE8) && defined(USE_AVX512) && defined(SFNNwoPSQT) && !defined(NO_PREFETCH)
+#include "history.h"
+#endif
 #include "misc.h"
 #include "tt.h"
 #include "mate/mate.h"
@@ -47,31 +52,31 @@ namespace Zobrist {
 
 #if STOCKFISH
 
-Key psq[PIECE_NB][SQUARE_NB];
-Key enpassant[FILE_NB];
-Key castling[CASTLING_RIGHT_NB];
-Key side, noPawns;
+HASH_KEY psq[PIECE_NB][SQUARE_NB];
+HASH_KEY enpassant[FILE_NB];
+HASH_KEY castling[CASTLING_RIGHT_NB];
+HASH_KEY side, noPawns;
 
 #else
 
 // 💡 Stockfishでは、Keyはuint64_tなので zeroは単に 0と書けるが、
 //     やねうら王は、HASH_KEYは64,128,256bitに拡張しているので…。
-Key zero;
+HASH_KEY zero;
 
 // 手番
-Key side;
+HASH_KEY side;
 
-// 駒pcが盤上sqに配置されているときのZobrist Key
+// 駒pcが盤上sqに配置されているときのZobrist HASH_KEY
 // 💡 玉などは盤上にない場合、SQ_NBになるのでSQ_NB_PLUS1で確保する。
-Key psq[PIECE_NB][SQ_NB_PLUS1];
+HASH_KEY psq[PIECE_NB][SQ_NB_PLUS1];
 
 // c側の手駒prが一枚増えるごとにこれを加算するZobristKey
 // 枚数ごとにhash keyのtableを用意するのは嫌なので、加算型にしてある。
-Key hand[COLOR_NB][PIECE_HAND_NB];
+HASH_KEY hand[COLOR_NB][PIECE_HAND_NB];
 
 #if defined(USE_PARTIAL_KEY)
 // 歩の陣形に関して盤上に歩が一枚もない時のhash key
-Key noPawns;
+HASH_KEY noPawns;
 #endif
 
 #endif
@@ -85,11 +90,11 @@ void Position::init() {
 	PRNG rng(20151225); // 開発開始日 == 電王トーナメント2015,最終日
 
 	// 乱数で初期化するコード
-	auto set_rand = [&](Key& h) {
-        auto r1 = rng.rand<Key64>();
-        auto r2 = rng.rand<Key64>();
-        auto r3 = rng.rand<Key64>();
-        auto r4 = rng.rand<Key64>();
+	auto set_rand = [&](HASH_KEY& h) {
+        auto r1 = rng.rand<u64>();
+        auto r2 = rng.rand<u64>();
+        auto r3 = rng.rand<u64>();
+        auto r4 = rng.rand<u64>();
         SET_HASH(h, r1, r2, r3, r4);
     };
 
@@ -373,7 +378,7 @@ void Position::set_state() const {
         for (PieceType pr = PAWN; pr < PIECE_HAND_NB; ++pr)
             st->hand_key +=
               Zobrist::hand[c][pr]
-              * (int64_t) hand_count(hand[c], pr);  // 手駒はaddにする(差分計算が楽になるため)
+              * (i64) hand_count(hand[c], pr);  // 手駒はaddにする(差分計算が楽になるため)
 
     // --- hand
 
@@ -447,9 +452,9 @@ std::optional<PositionSetError> Position::set(const std::string& sfen, StateInfo
     // 盤面を読むときにスペースが盤面と手番とのセパレーターなのでそこを読み飛ばさないようにnoskipwsを指定しておく。
     ss >> std::noskipws;
 
-    uint8_t token;
+    u8 token;
     bool    promote = false;
-    size_t  idx;
+    usize   idx;
 
 #if defined(USE_EVAL_LIST)
     // evalListのclear。上でmemsetでゼロクリアしたときにクリアされているが…。
@@ -727,7 +732,7 @@ std::optional<PositionSetError> Position::set(const std::string& sfen, StateInfo
 
     // --- evaluate
 
-#if defined(USE_PIECE_VALUE)
+#if defined(USE_MATERIAL_VALUE)
     st->materialValue = Eval::material(*this);
 #endif
 
@@ -1654,7 +1659,8 @@ Move Position::to_move(Move16 m16) const
 // 指し手で盤面を1手進める。
 // ⚠ m として Move::none()はもちろん、Move::null() , Move::resign()などお断り。
 template<Color Us, typename T>
-void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* tt) {
+void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* tt,
+                            [[maybe_unused]] const SharedHistories* history) {
 
     ASSERT_LV3(m.is_ok());
     ASSERT_LV3(&newSt != st);
@@ -1666,12 +1672,12 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
     // 現在の局面のhash keyはこれで、これを更新していき、
     // 次の局面のhash keyを求めてStateInfo::key_に格納。
 #if STOCKFISH
-    Key k = st->key ^ Zobrist::side;
+    HASH_KEY k = st->key ^ Zobrist::side;
 #else
-    Key k = st->board_key ^ Zobrist::side;
+    HASH_KEY k = st->board_key ^ Zobrist::side;
 
     // 🌈 将棋だと手駒がある。手駒用のhash keyを別途用意
-    Key h = st->hand_key;
+    HASH_KEY h = st->hand_key;
 #endif
 
     // Copy some fields of the old state to our new StateInfo object except the
@@ -1807,7 +1813,7 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
 
 #endif
 
-#if defined(USE_PIECE_VALUE)
+#if defined(USE_MATERIAL_VALUE)
     // 駒割りの差分計算用
     int materialDiff;
 #endif
@@ -1839,7 +1845,7 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
         if constexpr (std::is_same_v<T, TranspositionTable>)
         {
             const auto key = k ^ h;
-            prefetch(tt->first_entry(key, them));
+            prefetch(tt->get_cluster(key, them));
         }
 
 #if defined(USE_PARTIAL_KEY) & 0
@@ -1887,7 +1893,7 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
         // put_piece()などを用いたのでupdateする
         update_bitboards();
 
-#if defined(USE_PIECE_VALUE)
+#if defined(USE_MATERIAL_VALUE)
         // 駒打ちなので駒割りの変動なし。
         materialDiff = 0;
 #endif
@@ -1912,7 +1918,7 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
         // もし成る指し手であるなら、成った後の駒を配置する。
         Piece moved_after_pc = moved_piece_after(m);
 
-#if defined(USE_PIECE_VALUE)
+#if defined(USE_MATERIAL_VALUE)
         materialDiff = m.is_promote() ? Eval::ProDiffPieceValue[moved_pc] : 0;
 #endif
         // 📌 ここから下はStockfishのdo_move()のコードの一部 📌
@@ -1966,7 +1972,7 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
             h += Zobrist::hand[Us][pr];
 #endif
 
-#if defined(USE_PIECE_VALUE)
+#if defined(USE_MATERIAL_VALUE)
             // 評価関数で使う駒割りの値も更新
             materialDiff += Eval::CapturePieceValue[captured];
 #endif
@@ -1998,7 +2004,7 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
         if constexpr (std::is_same_v<T, TranspositionTable>)
         {
             const auto key = k ^ h;
-            prefetch(tt->first_entry(key, them));
+            prefetch(tt->get_cluster(key, them));
         }
 
 #if defined(USE_EVAL_LIST)
@@ -2090,7 +2096,7 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
     //st->continuousCheck[them] = prev->continuousCheck[them];
     // 💡 memcpy()するので自動的にそうなっている。
 
-#if defined(USE_PIECE_VALUE)
+#if defined(USE_MATERIAL_VALUE)
     st->materialValue =
       (Value) (st->previous->materialValue + (Us == BLACK ? materialDiff : -materialDiff));
     //ASSERT_LV5(st->materialValue == Eval::material(*this));
@@ -2104,6 +2110,19 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
     st->hand_key  = h;
 
     st->hand = hand[them];
+#if defined(NNUE_FT_SPARSE8) && defined(USE_AVX512) && defined(SFNNwoPSQT) && !defined(NO_PREFETCH)
+    // 次局面のキーが確定したので、王手情報・千日手の計算中に履歴を先読みする。
+    if (history) {
+        const auto pc = moved_piece(m);
+        const auto to = m.to_sq();
+        _mm_prefetch(reinterpret_cast<const char*>(&history->pawn_entry(*this)[pc][to]), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char*>(&history->pawn_correction_entry(*this)), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char*>(&history->minor_piece_correction_entry(*this)), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char*>(&history->nonpawn_correction_entry<WHITE>(*this)), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char*>(&history->nonpawn_correction_entry<BLACK>(*this)), _MM_HINT_T0);
+    }
+#endif
+
 
     // このタイミングで王手関係の情報を更新しておいてやる。
     set_check_info<false>();
@@ -2215,7 +2234,7 @@ void Position::do_move_impl(Move m, StateInfo& newSt, bool givesCheck, const T* 
 }
 
 // ある指し手を指した後のhash keyを返す。
-Key Position::key_after(Move m) const {
+HASH_KEY Position::key_after(Move m) const {
 
     Color Us = side_to_move();
     auto  k  = st->board_key ^ Zobrist::side;
@@ -2404,12 +2423,12 @@ void Position::undo_move_impl(Move m) {
 
 // do_move()を先後分けたdo_move_impl<>()を呼び出す。
 template <typename T>
-void Position::do_move(Move m, StateInfo& newSt, bool givesCheck, const T* tt)
+void Position::do_move(Move m, StateInfo& newSt, bool givesCheck, const T* tt, const SharedHistories* history)
 {
     if (sideToMove == BLACK)
-        do_move_impl<BLACK, T>(m, newSt, givesCheck, tt);
+        do_move_impl<BLACK, T>(m, newSt, givesCheck, tt, history);
     else
-        do_move_impl<WHITE, T>(m, newSt, givesCheck, tt);
+        do_move_impl<WHITE, T>(m, newSt, givesCheck, tt, history);
 }
 
 // undo_move()を先後分けたdo_move_impl<>()を呼び出す。
@@ -2445,7 +2464,7 @@ void Position::do_null_move(StateInfo& newSt, const T& tt) {
     }
 
     st->key ^= Zobrist::side;
-    prefetch(tt.first_entry(key()));
+    prefetch(tt.get_cluster(key()));
 
 	st->pliesFromNull = 0;
 
@@ -2462,6 +2481,11 @@ void Position::do_null_move(StateInfo& newSt, const T& tt) {
 #if defined(USE_CLASSIC_EVAL) && defined(EVAL_NNUE)
     // NNUEの場合、KPPT型と違って、手番が違う場合、計算なしに済ますわけにはいかない。
     st->accumulator.computed_score = false;
+#if defined(USE_LAZY_EVALUATE) && USE_LAZY_EVALUATE > 1
+    // A null move changes no FT feature, including when its parent was not evaluated.
+    // 親局面が未評価でも、null moveではFT特徴量の変化を記録しない。
+    st->dirtyPiece.dirty_num = 0;
+#endif
 #endif
 
 	// このタイミングでアドレスが確定するのでprefetchしたほうが良い。(かも)
@@ -2469,7 +2493,7 @@ void Position::do_null_move(StateInfo& newSt, const T& tt) {
     // 　prefetchのスケジューラーが処理しきれない可能性が…。
     // CPUによっては有効なので一応やっておく。
 
-	// 📝 以下のprefetchのfirst_entry()でやねうら王は、この時の手番が必要なので
+	// 📝 以下のprefetchのget_cluster()でやねうら王は、この時の手番が必要なので
     //     先に手番を変えておく。
     sideToMove = ~sideToMove;
 
@@ -2480,7 +2504,7 @@ void Position::do_null_move(StateInfo& newSt, const T& tt) {
 	if constexpr (std::is_same_v<T, TranspositionTable>)
     {
         const auto key = st->key();
-        prefetch(tt.first_entry(key, sideToMove));
+        prefetch(tt.get_cluster(key, sideToMove));
     }
 
 	st->pliesFromNull = 0;
@@ -2525,7 +2549,6 @@ void Position::undo_null_move()
 }
 
 
-#if defined (USE_SEE)
 
 // Tests if the SEE (Static Exchange Evaluation)
 // value of move is greater or equal to the given threshold. We'll use an
@@ -2795,7 +2818,7 @@ bool Position::see_ge(Move m, Value threshold) const
 		case DIRECT_L : attackers |= rayEffect<DIRECT_L >(to, occupied) & pieces(ROOK_DRAGON); break;
 		case DIRECT_R : attackers |= rayEffect<DIRECT_R >(to, occupied) & pieces(ROOK_DRAGON); break;
 
-		default: UNREACHABLE; break;
+		default: ASSERT_LV3(false); sf_unreachable(); break;
 		}
 
         // clang-format on
@@ -2808,7 +2831,6 @@ bool Position::see_ge(Move m, Value threshold) const
     return bool(res);
 }
 
-#endif // defined (USE_SEE)
 
 // ----------------------------------
 //      千日手判定
@@ -3177,7 +3199,8 @@ Move Position::DeclarationWin() const
 	}
 
 	default:
-		UNREACHABLE;
+		ASSERT_LV3(false);
+		sf_unreachable();
 		return Move::none();
 	}
 }
@@ -3683,7 +3706,42 @@ void Position::UnitTest(Test::UnitTester& tester, IEngine& engine) {
             tester.test("bishop's unpromoted move", all);
         }
     }
-#if defined(USE_SEE)
+    {
+        auto section = tester.section("LegalMoveGeneration");
+
+        // ピンされた金は玉と飛車を結ぶ線上には動けるが、横には動けない。
+        pos_init("4k4/9/9/9/4r4/9/4G4/9/4K4 b - 1");
+        auto quiets = MoveList<LEGAL_ALL>(pos);
+        tester.test("pinned gold",
+                    quiets.contains(make_move(SQ_57, SQ_56, B_GOLD))
+                      && !quiets.contains(make_move(SQ_57, SQ_47, B_GOLD)));
+
+        // 王手している飛車の利きへ玉を動かす手は生成せず、合駒は生成する。
+        pos_init("4k4/9/9/9/4r4/9/9/9/4K4 b G 1");
+        auto evasions = MoveList<LEGAL_ALL>(pos);
+        tester.test("king safety and interposition",
+                    !evasions.contains(make_move(SQ_59, SQ_58, B_KING))
+                      && evasions.contains(make_move_drop(GOLD, SQ_58, BLACK)));
+
+        // 両王手は玉の移動だけで回避する。手駒があっても合駒は生成しない。
+        pos_init("4k4/9/9/9/4r4/9/6b2/9/4K4 b G 1");
+        auto doubleCheck = MoveList<LEGAL_ALL>(pos);
+        tester.test("double check",
+                    pos.checkers().more_than_one() && doubleCheck.size() != 0
+                      && std::all_of(doubleCheck.begin(), doubleCheck.end(), [&](Move move) {
+                             return !move.is_drop() && type_of(pos.moved_piece(move)) == KING
+                                 && pos.pseudo_legal_s<true>(move) && pos.legal(move);
+                         }));
+
+        // 王手となる歩打ちでも、打ち歩詰めならquiet/王手生成の両方から除く。
+        pos_init("4k4/9/3LGL3/9/9/9/9/9/4K4 b P 1");
+        const Move pawnMate = make_move_drop(PAWN, SQ_52, BLACK);
+        tester.test("illegal pawn-drop mate",
+                    !MoveList<QUIETS_ALL>(pos).contains(pawnMate)
+                      && !MoveList<CHECKS_ALL>(pos).contains(pawnMate)
+                      && MoveList<QUIETS_ALL>(pos).contains(make_move_drop(PAWN, SQ_42, BLACK)));
+    }
+
     {
         // see_ge()のテスト
         auto      section = tester.section("see_ge");
@@ -3731,7 +3789,6 @@ void Position::UnitTest(Test::UnitTester& tester, IEngine& engine) {
         m = pos.to_move(make_move16(SQ_22, SQ_33));
         tester.test("pos2move", see_ge_th(-Eval::HorseValue));
     }
-#endif
 
     {
         // null moveのテスト
@@ -3996,8 +4053,8 @@ void Position::UnitTest(Test::UnitTester& tester, IEngine& engine) {
 template bool Position::pseudo_legal_s<false>(const Move m) const;
 template bool Position::pseudo_legal_s< true>(const Move m) const;
 
-template void Position::do_move(Move m, StateInfo& newSt, bool givesCheck, const TranspositionTable* tt);
-template void Position::do_move(Move m, StateInfo& newSt, bool givesCheck, const void* tt);
+template void Position::do_move(Move m, StateInfo& newSt, bool givesCheck, const TranspositionTable* tt, const SharedHistories* history);
+template void Position::do_move(Move m, StateInfo& newSt, bool givesCheck, const void* tt, const SharedHistories* history);
 
 template void Position::do_null_move(StateInfo& st, const TranspositionTable& tt);
 template void Position::do_null_move(StateInfo& st, const int& tt);

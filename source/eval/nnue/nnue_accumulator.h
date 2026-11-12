@@ -7,6 +7,8 @@
 
 #if defined(EVAL_NNUE)
 
+#include "../../types.h"
+#include "../../misc.h"
 #include "nnue_architecture.h"
 
 namespace YaneuraOu {
@@ -16,7 +18,7 @@ namespace Eval::NNUE {
 // 最終的な出力である評価値も一緒に持たせておく
 // AVX-512命令を使用する場合に64bytesのアライメントが要求される。
 struct alignas(64) Accumulator {
-  std::int16_t
+  i16
       accumulation[2][kRefreshTriggers.size()][kTransformedFeatureDimensions];
   Value score = VALUE_ZERO;
   bool computed_accumulation = false;

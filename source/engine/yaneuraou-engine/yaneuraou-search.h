@@ -146,6 +146,10 @@ struct Skill {
 // 💡 Stockfishの同名のclassとほぼ同じ内容。Stockfishのsearch.hにあるSearchManagerを参考にすること。
 // 🤔 YaneuraOuEngineの1インスタンスに対して、SearchManagerが1インスタンスあれば良いので、
 //     やねうら王では、YaneuraOuEngineのメンバーとして持たせることにする。
+// SearchManager manages the search from the main thread. It is responsible for
+// keeping track of the time, and storing data strictly related to the main thread.
+// SearchManagerはメインスレッドの探索を管理する。
+// 時間の追跡と、メインスレッド専用のデータの保持を担当する。
 class SearchManager {
    public:
     // 📝 やねうら王では、これはnamespace Searchで定義しておく。
@@ -304,6 +308,9 @@ struct Stack {
 
     // このnodeでのreductionの量
     int reduction;
+
+    // 同一ノードでこれまでにNMPがfail highした回数。
+    int priorNMPFailHigh;
 };
 
 
@@ -407,12 +414,24 @@ class YaneuraOuEngine: public Engine {
 
     // Stockfishとの互換性のために用意。
     Search::SearchManager* main_manager() { return &manager; }
+
+   private:
+    friend class YaneuraOuWorker;
+    // Worker間で共有するが、別EngineのSPSA設定とは独立したreductions表。
+    std::array<int, MAX_MOVES> reductions{};
+
 };
 
 // やねうら王の探索Worker
 // 📌 Stockfishから拡張して、やねうら王はエンジンを自由に差し替えられるようになっているので、
 //     自分のWorkerを定義するには、Search::Worker classから派生させる。
 // 💡 このclassのコードは、Stockfishのsearch.hにあるWorker classを参考にすること。
+// Search::Worker is the class that does the actual search.
+// It is instantiated once per thread, and it is responsible for keeping track
+// of the search history, and storing data required for the search.
+// Search::Workerは実際の探索を担当するクラスで、スレッドごとに1つ生成される。
+// 探索履歴と探索に必要なデータを保持する。
+// やねうら王では、この役割を派生クラスYaneuraOuWorkerが担う。
 class YaneuraOuWorker: public Worker {
    public:
     // 💡 コンストラクタでWorkerのコンストラクタを初期化しないといけないので、
@@ -422,10 +441,14 @@ class YaneuraOuWorker: public Worker {
                     // 追加でYaneuraOuEngineからもらいたいもの
                     YaneuraOuEngine&    engine);
 
-    // "usinewgame"に対して呼び出される。対局前の初期化。
+    // Reset histories, usually before a new game.
+    // 通常は新しい対局の前に、履歴をリセットする。
     virtual void clear() override;
 
-    // "go"コマンドでの探索の開始時にmain threadから呼び出される。
+    // Called when the program receives the UCI 'go' command. It searches
+    // from the root position and outputs the "bestmove".
+    // goコマンドを受信したときに呼び出され、ルート局面から探索してbestmoveを出力する。
+    // やねうら王ではUSIのgoを扱う。補助スレッドでは探索のみを行う。
     virtual void start_searching() override;
 
 	// 📝 これは、やねうら王ではbase classで定義されている。
@@ -449,15 +472,13 @@ class YaneuraOuWorker: public Worker {
 
     CapturePieceToHistory captureHistory;
 
-    // コア数が多いか、長い持ち時間においては、ContinuationHistoryもスレッドごとに確保したほうが良いらしい。
-    // cf. https://github.com/official-stockfish/Stockfish/commit/5c58d1f5cb4871595c07e6c2f6931780b5ac05b5
-    // 添字の[2][2]は、[inCheck(王手がかかっているか)][capture_stage]
-    // →　この改造、レーティングがほぼ上がっていない。悪い改造のような気がする。
-    ContinuationHistory continuationHistory[2][2];
     CorrectionHistory<Continuation> continuationCorrectionHistory;
 
     TTMoveHistory    ttMoveHistory;
     SharedHistories& sharedHistory;
+    // 添字は[inCheck][capture_stage]。実体はNUMAノード内で共有する。
+    ContinuationHistory (&continuationHistory)[2][2];
+    const std::array<int, MAX_MOVES>& reductions;
 
    private:
     // 反復深化
@@ -473,7 +494,8 @@ class YaneuraOuWorker: public Worker {
 
     void do_move(Position& pos, const Move move, StateInfo& st, Stack* const ss);
     void
-    do_move(Position& pos, const Move move, StateInfo& st, const bool givesCheck, Stack* const ss);
+    do_move(Position& pos, const Move move, StateInfo& st, const bool givesCheck,
+            const bool capture, Stack* const ss);
     void do_null_move(Position& pos, StateInfo& st);
 
 	void undo_move(Position& pos, const Move move);
@@ -484,7 +506,7 @@ class YaneuraOuWorker: public Worker {
     // これは PV ノードおよび非 PV ノードの両方に対応するメインの探索関数
     // 💡 最初、iterative_deepening()のなかから呼び出される。
     template<NodeType nodeType>
-    Value search(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cutNode);
+    Value search(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, const bool cutNode);
 
     // 静止探索
     // Quiescence search function, which is called by the main search
@@ -499,8 +521,7 @@ class YaneuraOuWorker: public Worker {
     //                       上がっていないなら悪化していく局面なので深く読んでも仕方ないからreduction量を心もち増やす。
     //   d     : depth
     //   mn    : move_count
-    //   delta : staticEvalとchildのeval(value)の差。これが低い時にreduction量を増やしたい。
-    int reduction(bool i, Depth d, int mn, int delta) const;
+    int reduction(bool i, Depth d, int mn) const;
 
 	// Pointer to the search manager, only allowed to be called by the main thread
     // 検索マネージャへのポインタ。メインスレッドからのみ呼び出すことが許可されています。
@@ -536,7 +557,7 @@ class YaneuraOuWorker: public Worker {
     // nodes           : 探索node数これはbase classのほうにある。
     // tbHits          : tablebaseにhitした回数。将棋では使わない。
     // bestMoveChanges : bestMoveが反復深化のなかで変化した回数
-    std::atomic<uint64_t> /* nodes, tbHits,*/ bestMoveChanges;
+    RelaxedAtomic<u64> /* nodes, tbHits,*/ bestMoveChanges;
 
     // selDepth : 選択探索の深さ。
     // 💡depthとPV lineに対するUSI infoで出力するselDepth。
@@ -553,13 +574,14 @@ class YaneuraOuWorker: public Worker {
     RootMoves rootMoves;
 #endif
 
-    // aspiration searchで使う。
+    // 反復深化の探索深さと、最後に完了した深さ。
     Depth rootDepth, completedDepth;
-    Value rootDelta;
+    // 詰みを探すために一部の枝刈りを緩めるモード。
+    bool seekMate = false;
 
-    // 前回の反復深化で確定したPV。
+    // 現在のMultiPV候補について、前回の反復深化で得たPV。
     // 次の反復深化でこのPV lineを辿っている間は、IIRとquiet shallow pruningを抑制する。
-    PVMoves lastIterationPV;
+    PVMoves lastIterationIdxPV;
 
 #if STOCKFISH
 	// 📓 やねうら王では、Engine classが持っている。
@@ -572,20 +594,12 @@ class YaneuraOuWorker: public Worker {
     NumaReplicatedAccessToken numaAccessToken;
 #endif
 
-    // Reductions lookup table initialized at startup
-    // 起動時に初期化されるreductionsの参照表
-    // 💡 reductionとは、LMRで残り探索深さを減らすこと。
-    /*
-		📓	このテーブル、各workerが同じものを持っている。
-		    頻繁に参照するテーブルなのでこのほうが良いのだと思われる。
-	*/ 
-    std::array<int, MAX_MOVES> reductions;  // [depth or moveNumber]
 
 #if STOCKFISH
 	// やねうら王では、これらは基底classであるWorkerが持っている。
 
-    // The main thread has a SearchManager, the others have a NullSearchManager
-    // メインスレッドは SearchManager を持ち、他のスレッドは NullSearchManager を持つ。
+    // The main thread has a SearchManager, the others have a nullptr
+    // メインスレッドはSearchManagerを持ち、他のスレッドはnullptrを持つ。
     std::unique_ptr<ISearchManager> manager;
 
     // 📝 tablebaseは将棋では使わない。
@@ -625,15 +639,9 @@ class YaneuraOuWorker: public Worker {
 #endif
 
 #if STOCKFISH
-    // 📝 こちらは、StockfishではThreadPool::get_best_thread()の実装のために必要。
-    //     やねうら王では、YaneuraOuWorkerでget_best_thread()を実装しているのでこのfriendは不要。
     friend class Stockfish::ThreadPool;
 #else
 	// 🌈 以下、やねうら王独自追加 🌈
-
-    // 並列探索において一番良い思考をしたthreadの選出。
-    // 💡 Stockfishでは ThreadPool::get_best_thread()に相当するもの。
-    YaneuraOuWorker* get_best_thread() const;
 
 	// WorkerのポインタをYaneuraOuWorkerのポインタにupcastする。
     // 💡 このWorkerから派生させるようなclass設計だと必要になるので用意した。

@@ -1,6 +1,7 @@
 ﻿#ifndef SEARCH_H_INCLUDED
 #define SEARCH_H_INCLUDED
 
+#include <algorithm>
 //#include <cstdint>
 #include <cstring>
 //#include <vector>
@@ -17,7 +18,7 @@
 //#include "syzygy/tbprobe.h"
 //#include "timeman.h"
 #include "timeman.h"
-//#include "types.h"
+#include "types.h"
 
 namespace YaneuraOu {
 
@@ -47,18 +48,18 @@ namespace Search {
 
 struct PVMoves {
     Move        moves[MAX_PLY + 1];
-    std::size_t length = 0;
+    usize length = 0;
 
     Move*       begin() { return moves; }
     const Move* begin() const { return moves; }
     Move*       end() { return moves + length; }
     const Move* end() const { return moves + length; }
 
-    Move&       operator[](std::size_t index) { return moves[index]; }
-    const Move& operator[](std::size_t index) const { return moves[index]; }
+    Move&       operator[](usize index) { return moves[index]; }
+    const Move& operator[](usize index) const { return moves[index]; }
 
     bool        empty() const { return length == 0; }
-    std::size_t size() const { return length; }
+    usize size() const { return length; }
 
     void clear() { length = 0; }
 
@@ -67,7 +68,7 @@ struct PVMoves {
         moves[length++] = move;
     }
 
-    void resize(std::size_t newSize) {
+    void resize(usize newSize) {
         assert(newSize <= length);
         length = newSize;
     }
@@ -95,7 +96,7 @@ struct PVMoves {
 // fail low). Score is normally set at -VALUE_INFINITE for all non-pv moves.
 
 // root(探索開始局面)での指し手として使われる。それぞれのroot moveに対して、
-// その指し手で進めたときのscore(評価値)とPVを持っている。(PVはfail lowしたときには信用できない)
+// その指し手のscore（評価値）とPVを保持する。fail lowした手では、PVはその手への反証手順となる。
 // scoreはnon-pvの指し手では-VALUE_INFINITEで初期化される。
 struct RootMove
 {
@@ -113,6 +114,13 @@ struct RootMove
 	// そうでない場合、「ponder on」の際に考えるべきものが何もなくなります。
 
 	bool extract_ponder_from_tt(const TranspositionTable& tt, Position& pos, Move ponder_candidate);
+
+    // 未確定の評価値を、証明済みの勝ち・負けとして扱わないための判定。
+    bool is_inexact() const { return inexactLower || inexactUpper; }
+    bool is_exact_loss() const {
+        return score != -VALUE_INFINITE && is_loss(score) && !is_inexact();
+    }
+    void unset_inexact() { inexactLower = inexactUpper = false; }
 
 	// std::count(),std::find()などで指し手と比較するときに必要。
 	bool operator==(const Move& m) const { return pv[0] == m; }
@@ -135,6 +143,9 @@ struct RootMove
 	// 次のiteration時の探索窓の範囲を決めるときに使う。
 	Value previousScore    = -VALUE_INFINITE;
 
+    // 前回の評価値が確定値であるか。MultiPVの途中停止時の復元に用いる。
+    bool previousScoreExact = false;
+
 	// aspiration searchの時に用いる。previousScoreの移動平均。
 	Value averageScore	   = -VALUE_INFINITE;
 
@@ -146,11 +157,11 @@ struct RootMove
 	//     ソースコードの差分を減らすことにする。
 	Value uciScore		   = -VALUE_INFINITE;
 
-	// uciScoreはlowerboundになっているのか。
-	bool scoreLowerbound   = false;
+	// スコアが下界のみの未確定値であるか。
+	bool inexactLower      = false;
 
-	// uciScoreはupperboundになっているのか。
-	bool scoreUpperbound   = false;
+	// スコアが上界のみの未確定値であるか。
+	bool inexactUpper      = false;
 
 	// このスレッドがrootから最大、何手目まで探索したか(選択深さの最大)
 	int selDepth           = 0;
@@ -163,16 +174,20 @@ struct RootMove
 
 	// この指し手で進めたときのpv
 	PVMoves pv;
+    // 前回の反復で得たPV。previousScoreと組にして保存する。
+    PVMoves previousPV;
 };
 
 using RootMoves = std::vector<RootMove>;
 
 // goコマンドでの探索時に用いる、持ち時間設定などが入った構造体
 // "ponder"のフラグはここに含まれず、Threads.ponderにあるので注意。
+// LimitsType struct stores information sent by the caller about the analysis required.
+// LimitsTypeは、呼び出し側から指定された解析条件を保持する。
 struct LimitsType {
 
     // Init explicitly due to broken value-initialization of non POD in MSVC
-    // PODでない型をmemsetでゼロクリアすると破壊してしまうので明示的に初期化する。
+    // MSVCでは非POD型の値初期化に問題があるため、明示的に初期化する。
     LimitsType() {
 
         time[WHITE] = time[BLACK] = inc[WHITE] = inc[BLACK] /* = npmsec */ = movetime = TimePoint(0);
@@ -262,6 +277,11 @@ struct LimitsType {
 // UCIは、UCIオプション、スレッドプール、トランスポジションテーブルを保持する。
 // この構造体は、Search::Workerクラスへデータを簡単に渡すために使われる。
 
+// The UCI stores the uci options, thread pool, and transposition table.
+// This struct is used to easily forward data to the Search::Worker class.
+// UCI側が保持するオプション、スレッドプール、置換表などを
+// Search::Workerへまとめて渡すための構造体。
+// やねうら王ではUSIとEngineの構成に合わせて共通データを渡す。
 struct SharedState {
     SharedState(const OptionsMap&                                         optionsMap,
                 ThreadPool&                                               threadPool,
@@ -309,7 +329,7 @@ struct InfoFull: InfoShort {
     int selDepth;
 
     // "multipv"の値。
-    size_t multiPV;
+    usize multiPV;
 
 #if STOCKFISH
     // 💡勝率はやねうら王では使わない
@@ -321,17 +341,17 @@ struct InfoFull: InfoShort {
     std::string_view bound;
 
     // 経過時間
-    size_t timeMs;
+    usize timeMs;
 
     // 探索したnode数
-    size_t nodes;
+    usize nodes;
 
     // NPS
-    size_t nps;
+    usize nps;
 
 #if STOCKFISH
     // 💡tbHitsもやねうら王では使わない。(tb = tablebases)
-    size_t           tbHits;
+    usize           tbHits;
 #endif
 
     // PVを文字列化したもの
@@ -350,7 +370,7 @@ struct InfoIteration {
     std::string_view currmove;
 
 	// 現在探索中の指し手のナンバー
-    size_t currmovenumber;
+    usize currmovenumber;
 };
 
 // 📌 読み筋を出力する時に呼び出すlistener
@@ -364,6 +384,7 @@ using UpdateShort    = std::function<void(const InfoShort&)>;
 using UpdateFull     = std::function<void(const InfoFull&)>;
 using UpdateIter     = std::function<void(const InfoIteration&)>;
 using UpdateBestmove = std::function<void(std::string_view, std::string_view)>;
+using UpdateStart    = std::function<void()>;
 using UpdateInfo     = std::function<void(std::string_view)>;
 
 // 読み筋を出力するための関数を呼び出すlistener
@@ -372,6 +393,7 @@ struct UpdateContext {
     UpdateFull     onUpdateFull;     // PVを出力する時に用いる。
     UpdateIter     onIter;           // 反復深化で現在探索中の指し手。
     UpdateBestmove onBestmove;       // bestmoveを出力する時に用いる。
+    UpdateStart    onStart = []() {}; // メインワーカーが探索を開始する時に呼ぶ。
     UpdateInfo     onUpdateString;   // "info string "でそのまま出力する。
 };
 
@@ -403,9 +425,9 @@ public:
 	Worker(SharedState& sharedState,
 #if STOCKFISH
 	,std::unique_ptr<ISearchManager> sm,
-	size_t threadIdx,
-	size_t numaThreadIdx,
-	size_t numaTotal,
+	usize threadIdx,
+	usize numaThreadIdx,
+	usize numaTotal,
 	NumaReplicatedAccessToken numaAccessToken)
 #else
           // 🌈 上記の4つの引数を一纏めにした構造体
@@ -502,6 +524,9 @@ protected:
     TimePoint elapsed() const;
     TimePoint elapsed_time() const;
 
+    // Evaluate the current position of the game tree, from the point of view of
+    // the side to move.
+    // 手番側から見た、現在の探索木上の局面を評価する。
     Value evaluate(const Position&);
 #endif
 
@@ -509,12 +534,12 @@ protected:
 	LimitsType limits;
 
 	// 📝 派生class側で
-    // size_t pvIdx, pvLast;
+    // usize pvIdx, pvLast;
 
 	// nodes           : 探索したnode数。do_move()で(自分で)カウントする。
     // tbHits          : tablebaseにhitした回数。将棋では使わない。
     // bestMoveChanges : bestMoveが反復深化のなかで変化した回数。📝 派生classのほうで。
-    std::atomic<uint64_t> nodes /*, tbHits, bestMoveChanges*/;
+    RelaxedAtomic<u64> nodes /*, tbHits, bestMoveChanges*/;
 
 	// 📝 派生class側で。
 #if STOCKFISH
@@ -553,7 +578,7 @@ protected:
 	// numaThreadIdx   : 何番目のNUMAを使うか。
 	// numaTotal       : NUMA内のThreadの合計個数。
 	// numaAccessToken : このWorker threadに対応するNumaのtoken
-    size_t                    threadIdx, numaThreadIdx, numaTotal;
+    usize                    threadIdx, numaThreadIdx, numaTotal;
     NumaReplicatedAccessToken numaAccessToken;
 
 	// 📝 派生class側で
