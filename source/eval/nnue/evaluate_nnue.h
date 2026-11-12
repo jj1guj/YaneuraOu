@@ -135,9 +135,14 @@ namespace Progress {
 	// NNUE評価関数パラメーター（共有メモリまたはローカルメモリ上に配置）
 	extern SystemWideSharedConstant<NnueNetworks> shared_networks;
 
-	// 共有メモリ上のNnueNetworksへのconst参照を返すヘルパー。
+	// 探索中に参照するNnueNetworksへのポインタ。評価関数の読み込み時に設定される。
+	// 🌈 Linuxでは共有メモリ(/dev/shm, tmpfs)がhuge pageにならない(shmem_enabled=never)ので、
+	//     MADV_HUGEPAGEで確保したローカルメモリを指す。(evaluate_nnue.cppのLoadAndShare()参照)
+	extern const NnueNetworks* networks_ptr;
+
+	// NnueNetworksへのconst参照を返すヘルパー。
 	// 評価関数の呼び出しで毎回使われるので、インライン化する。
-	inline const NnueNetworks& networks() { return *shared_networks; }
+	inline const NnueNetworks& networks() { return *networks_ptr; }
 
 	// 評価関数ファイル名
 	extern const char* const kFileName;
