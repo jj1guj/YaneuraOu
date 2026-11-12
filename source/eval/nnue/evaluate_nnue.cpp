@@ -283,21 +283,6 @@ int Parameters::BucketIndex(const Position& pos, int bucket_count) const {
     // NNUE評価関数パラメーター（共有メモリまたはローカルメモリ上に配置）
     SystemWideSharedConstant<NnueNetworks> shared_networks;
 
-    // 探索中に参照するNnueNetworksへのポインタ。
-    const NnueNetworks* networks_ptr = nullptr;
-
-#if defined(__linux__) && !defined(__ANDROID__)
-    // 🌈 Linuxでは、評価関数パラメーターをPOSIX共有メモリ(/dev/shm)に置かず、
-    //     make_unique_large_page()で確保した(MADV_HUGEPAGEを指定した)ローカルメモリに置く。
-    //
-    //     /dev/shm(tmpfs)は通常huge pageにならない(/sys/kernel/mm/transparent_hugepage/shmem_enabled
-    //     がデフォルトでnever)ので、FTの重み(SFNN1536で約225MB)が4KB pageで割り当てられ、
-    //     探索中のFTの列アクセスのたびにTLB missとpage walkが起きていた。
-    //     (Raspberry Pi 4のCortex-A72はL2 TLBが1024 entryしかないので特に影響が大きい)
-    //     プロセス間でパラメーターを共有できなくなるが、大会では1プロセスしか動かさないので問題ない。
-    static LargePagePtr<NnueNetworks> local_networks;
-#endif
-
     // 評価関数ファイル名
     const char* const kFileName = EvalFileDefaultName;
 
@@ -413,15 +398,8 @@ namespace {
 		if (!stream || stream.peek() != std::ios::traits_type::eof())
 			return Tools::ResultCode::FileCloseError;
 
-#if defined(__linux__) && !defined(__ANDROID__)
-		// huge pageを使えるローカルメモリ(tmp)をそのまま使う。(local_networksの宣言箇所のコメント参照)
-		local_networks = std::move(tmp);
-		networks_ptr   = local_networks.get();
-#else
 		// 共有メモリに配置（同一ハッシュの共有メモリが既に存在すればそちらを参照）
 		shared_networks = SystemWideSharedConstant<NnueNetworks>(*tmp);
-		networks_ptr    = &*shared_networks;
-#endif
 
 		return Tools::ResultCode::Ok;
 	}
