@@ -626,6 +626,13 @@ void prefetch([[maybe_unused]] const void* addr) {
 	__builtin_prefetch(addr);
 	#endif
 
+#elif defined(__GNUC__) || defined(__clang__)
+
+	// 🌈 ARM(TARGET_CPU=ARMV8など)ではUSE_SSE2が定義されないので、これがないと
+	//     prefetch()が空の関数になり、do_move()での置換表のprefetchがまったく効いていなかった。
+	//     __builtin_prefetch()はAArch64ではPRFM命令になる。(Stockfishもarmv8でprefetchを有効にしている)
+	__builtin_prefetch(addr);
+
 #endif
 }
 
