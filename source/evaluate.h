@@ -1,5 +1,5 @@
-﻿#ifndef _EVALUATE_H_
-#define _EVALUATE_H_
+﻿#ifndef EVALUATE_H_INCLUDED
+#define EVALUATE_H_INCLUDED
 
 #include "config.h"
 #include "types.h"
@@ -20,10 +20,13 @@
 
 namespace YaneuraOu {
 struct StateInfo;
+#if defined(EVAL_SFNN) && defined(ENABLE_NUMA_NETWORK_REPLICATION)
+class NumaReplicatedAccessToken;
+#endif
 
 namespace Eval {
 
-#if defined(USE_CLASSIC_EVAL)
+#if defined(USE_CLASSIC_EVAL) || defined(EVAL_SFNN)
 	// 評価関数の初期化。これは起動直後に1度だけ呼び出される。
 	// 💡 引数で受け取ったoptionsを用いて、
 	//     評価関数に必要なエンジンオプションを追加することができる。
@@ -33,12 +36,14 @@ namespace Eval {
 	// あるいは差分計算が不可能なときに呼び出される。
 	Value compute_eval(const Position& pos);
 
+#if defined(USE_CLASSIC_EVAL)
 	// 評価関数本体
 	// このあとのdo_move()のあとのevaluate()で差分計算ができるように、
 	// 現在の前局面から差分計算ができるときだけ計算しておく。
 	// 評価値自体は返さない。
 	// 備考) 差分計算型の評価関数ではないときは、この関数は何もしなくて良い。
 	void evaluate_with_no_return(const Position& pos);
+#endif
 
 	// 評価値の内訳表示(デバッグ用)
 	void print_eval_stat(Position& pos);
@@ -51,6 +56,13 @@ namespace Eval {
 
 	// 評価関数本体
 	Value evaluate(const Position& pos);
+#if defined(EVAL_SFNN)
+    namespace NNUE { class AccumulatorStack; }
+    Value evaluate(const Position& pos, NNUE::AccumulatorStack& stack);
+#if defined(ENABLE_NUMA_NETWORK_REPLICATION)
+    Value evaluate(const Position& pos, NNUE::AccumulatorStack& stack, NumaReplicatedAccessToken token);
+#endif
+#endif
 
 #if defined(EVAL_KPPT) || defined(EVAL_KPP_KKPT)
 	// 評価関数パラメーターのチェックサムを返す。
@@ -132,7 +144,7 @@ namespace Eval {
 
 		// --- 手駒
 
-#if defined (EVAL_MATERIAL) || defined (EVAL_KPPT) || defined(EVAL_KPP_KKPT) || defined(EVAL_NNUE)
+#if defined (EVAL_MATERIAL) || defined (EVAL_KPPT) || defined(EVAL_KPP_KKPT) || (defined(EVAL_NNUE) || defined(EVAL_SFNN))
 		// Apery(WCSC26)方式。0枚目の駒があるので少し隙間がある。
 		// 定数自体は1枚目の駒のindexなので、EVAL_KPPの時と同様の処理で問題ない。
 		// 例)
@@ -392,16 +404,9 @@ namespace Eval {
 	};
 #endif // defined(USE_EVAL_LIST)
 
-#if defined(USE_EVAL_HASH)
-	// EvalHashのリサイズ
-	void EvalHash_Resize(size_t mbSize);
-
-	// EvalHashのクリア
-	void EvalHash_Clear();
-#endif
 
 
 } // namespace Eval
 } // namespace YaneuraOu
 
-#endif // #ifndef _EVALUATE_H_
+#endif // #ifndef EVALUATE_H_INCLUDED

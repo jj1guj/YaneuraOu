@@ -96,6 +96,7 @@ struct SearchOptions
 
 struct Skill {
     // Lowest and highest Elo ratings used in the skill level calculation
+    // スキルレベルの計算に用いるEloレーティングの下限と上限。
     constexpr static int LowestElo  = 1320;
     constexpr static int HighestElo = 3190;
 
@@ -119,7 +120,7 @@ struct Skill {
     bool time_to_pick(Depth depth) const { return depth == 1 + int(level); }
 
     // 手加減が有効のときはMultiPV = 4で探索
-    Move pick_best(const RootMoves&, size_t multiPV);
+    Move pick_best(const RootMoves&, usize multiPV);
 
     double level;
     Move   best = Move::none();
@@ -130,12 +131,13 @@ struct Skill {
 // 💡 やねうら王ではSkillLevelを実装しない。
 struct Skill {
     // dummy constructor
+    // 互換用の、何もしないコンストラクター。
     Skill(int, int) {}
 
     // 常にfalseを返す。つまり、手加減の無効化。
     bool enabled() { return false; }
     bool time_to_pick(Depth) const { return true; }
-    Move pick_best(const RootMoves&, size_t multiPV) { return Move::none(); }
+    Move pick_best(const RootMoves&, usize multiPV) { return Move::none(); }
     Move best = Move::none();
 };
 
@@ -159,6 +161,7 @@ class SearchManager {
     using UpdateFull     = std::function<void(const InfoFull&)>;
     using UpdateIter     = std::function<void(const InfoIteration&)>;
     using UpdateBestmove = std::function<void(std::string_view, std::string_view)>;
+    using UpdateStart    = std::function<void()>;
 
     // PVを設定した時に出力するためのlistener
     struct UpdateContext {
@@ -166,6 +169,7 @@ class SearchManager {
         UpdateFull     onUpdateFull;
         UpdateIter     onIter;
         UpdateBestmove onBestmove;
+        UpdateStart    onStart;
     };
 #endif
 
@@ -178,10 +182,10 @@ class SearchManager {
     // 現在のPV(読み筋)をUpdateContext::onUpdateFull()で登録する。
     // tt      : このスレッドに属する置換表
     // depth   : 反復深化のiteration深さ。
-    void pv(Search::YaneuraOuWorker&  worker,
-            const ThreadPool&         threads,
-            const TranspositionTable& tt,
-            Depth                     depth);
+    void output_pv(Search::YaneuraOuWorker&   worker,
+                   const ThreadPool&         threads,
+                   const TranspositionTable& tt,
+                   Depth                     depth);
 
     // 🌈 start_searching()より前にUI threadから
     //		Worker::pre_start_searching()が呼び出され、virtualなので派生classの
@@ -223,8 +227,6 @@ class SearchManager {
     // 探索を即座に終了させていいところまで探索が進んでいるフラグ。
     bool stopOnPonderhit;
 
-    size_t id;
-
     const UpdateContext& updates;
 
     // 🌈 やねうら王独自 🌈
@@ -249,71 +251,6 @@ class SearchManager {
     int lastGamePly;
 };
 
-// -----------------------
-//  探索のときに使うStack
-// -----------------------
-
-// 💡 このコードは、Stockfishの search.hにあったもの。
-
-// Stack struct keeps track of the information we need to remember from nodes
-// shallower and deeper in the tree during the search. Each search thread has
-// its own array of Stack objects, indexed by the current ply.
-
-// Stack構造体は、検索中にツリーの浅いノードや深いノードから記憶する必要がある情報を管理します。
-// 各検索スレッドは、現在の深さ（ply）に基づいてインデックスされた、独自のStackオブジェクトの配列を持っています。
-
-struct Stack {
-    // PVへのポインター。
-    PVMoves* pv;
-
-    // historyのうち、counter moveに関するhistoryへのポインタ。実体はThreadが持っている。
-    PieceToHistory* continuationHistory;
-
-    // [pc][to]のペアに対する correction history。
-    CorrectionHistory<PieceTo>* continuationCorrectionHistory;
-
-    // rootからの手数。rootならば0。
-    int ply;
-
-    // そのスレッドの探索においてこの局面で現在選択されている指し手
-    Move currentMove;
-
-    // singular extension判定のときに置換表の指し手をそのnodeで除外して探索したいのでその除外する指し手
-    Move excludedMove;
-
-    // 評価関数を呼び出して得た値。NULL MOVEのときに親nodeでの評価値が欲しいので保存しておく。
-    Value staticEval;
-
-    // 一度計算したhistoryの合計値をcacheしておくのに用いる。
-    int statScore;
-
-    // このnodeでdo_move()した生成した何手目の指し手か。(1ならおそらく置換表の指し手だろう)
-    int moveCount;
-
-    // この局面で王手がかかっていたかのフラグ
-    bool inCheck;
-
-    // 置換表にPV nodeで調べた値が格納されていたか(これは価値が高い)
-    bool ttPv;
-
-    // 置換表にhitしたかのフラグ
-    bool ttHit;
-
-    // 前回の反復深化で得たPVを辿っているnodeか。
-    // Stockfishでは、このPV line上では一部の浅い枝刈りを抑制する。
-    bool followPV;
-
-    // cut off(betaを超えたので枝刈りとしてreturn)した回数。
-    int cutoffCnt;
-
-    // このnodeでのreductionの量
-    int reduction;
-
-    // 同一ノードでこれまでにNMPがfail highした回数。
-    int priorNMPFailHigh;
-};
-
-
 /*
    やねうら王 Engine(やねうら王の通常探索部)
 
@@ -334,8 +271,13 @@ class YaneuraOuEngine: public Engine {
     using InfoIter  = Search::InfoIteration;
 #endif
 
+#if defined(EVAL_SFNN) && defined(ENABLE_NUMA_NETWORK_REPLICATION)
+    YaneuraOuEngine();
+    ~YaneuraOuEngine() override;
+#else
     YaneuraOuEngine(/* std::optional<std::string> path = std::nullopt */) :
         manager(updateContext) {}
+#endif
 
     // 📝 やねうら王では、CommandLine::gから取得できるので使わない。
     // const std::string binaryDirectory;
@@ -359,12 +301,12 @@ class YaneuraOuEngine: public Engine {
     // TranspositionTable tt;
 
     // TODO : あとで
-    //LazyNumaReplicatedSystemWide<Eval::NNUE::Networks> networks;
+    //LazyNumaReplicatedSystemWide<Eval::NNUE::Network> network;
 
     // Search::UpdateContext updateContext;
 
     // TODO : あとで
-    //std::function<void(std::string_view)> onVerifyNetworks;
+    //std::function<void(std::string_view)> onVerifyNetwork;
 
 	// historyの集めたやつ。
     std::map<NumaIndex, SharedHistories>  sharedHists;
@@ -419,6 +361,9 @@ class YaneuraOuEngine: public Engine {
     friend class YaneuraOuWorker;
     // Worker間で共有するが、別EngineのSPSA設定とは独立したreductions表。
     std::array<int, MAX_MOVES> reductions{};
+
+    // NUMA/スレッド構成を変更した場合、同サイズのTTも再配置する。
+    bool hashNeedsReallocation = false;
 
 };
 
@@ -490,13 +435,12 @@ class YaneuraOuWorker: public Worker {
     // 📝 do_move()は、Worker::nodesをインクリメントする。
     //     do_null_move()は、nodesはインクリメントしない。
     // 💡 givesCheckはこの指し手moveで王手になるか。
-    //     これが事前にわかっているなら、do_move(move,st,givesCheck)を呼び出したほうが速い。
+    //     givesCheckとcapture_stage()の結果を呼び出し元から渡し、再計算を避ける。
 
-    void do_move(Position& pos, const Move move, StateInfo& st, Stack* const ss);
     void
     do_move(Position& pos, const Move move, StateInfo& st, const bool givesCheck,
             const bool capture, Stack* const ss);
-    void do_null_move(Position& pos, StateInfo& st);
+    void do_null_move(Position& pos, StateInfo& st, Stack* const ss);
 
 	void undo_move(Position& pos, const Move move);
     void undo_null_move(Position& pos);
@@ -506,13 +450,18 @@ class YaneuraOuWorker: public Worker {
     // これは PV ノードおよび非 PV ノードの両方に対応するメインの探索関数
     // 💡 最初、iterative_deepening()のなかから呼び出される。
     template<NodeType nodeType>
-    Value search(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, const bool cutNode);
+    SYSV_ABI Value search(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, const bool cutNode);
 
     // 静止探索
     // Quiescence search function, which is called by the main search
     // メイン探索から呼ばれる静止探索関数
     // 💡 search()から、残りdepthが小さくなった時に呼び出される。
+#if STOCKFISH
+    template<NodeType nodeType>
+#else
+    // PSV変換用のTT読取無効化。通常探索は既定のtrueを使う。
     template<NodeType nodeType, bool ReadTT = true>
+#endif
     Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta);
 
 	// LMRのreductionの値を計算する。
@@ -521,6 +470,7 @@ class YaneuraOuWorker: public Worker {
     //                       上がっていないなら悪化していく局面なので深く読んでも仕方ないからreduction量を心もち増やす。
     //   d     : depth
     //   mn    : move_count
+    //   dは探索深さ、mnは指し手番号。
     int reduction(bool i, Depth d, int mn) const;
 
 	// Pointer to the search manager, only allowed to be called by the main thread
@@ -529,7 +479,8 @@ class YaneuraOuWorker: public Worker {
 #if STOCKFISH
     SearchManager* main_manager() const {
         assert(threadIdx == 0);
-        return static_cast<SearchManager*>(manager.get());
+        assert(manager.get() != nullptr);
+        return manager.get();
     }
 #else
     // 💡 Stockfishとの互換性のために用意。
@@ -541,7 +492,6 @@ class YaneuraOuWorker: public Worker {
 	//     このclassがelapsed()を持っているのでそちらを用いる。
 #if STOCKFISH
     TimePoint elapsed() const;
-    TimePoint elapsed_time() const;
 #endif
 
 	// 評価関数
@@ -552,7 +502,7 @@ class YaneuraOuWorker: public Worker {
     //LimitsType limits;
 
     // MultiPVの時の現在探索中のPVのindexと、PVの末尾
-    size_t pvIdx, pvLast;
+    usize pvIdx, pvLast;
 
     // nodes           : 探索node数これはbase classのほうにある。
     // tbHits          : tablebaseにhitした回数。将棋では使わない。
@@ -574,8 +524,8 @@ class YaneuraOuWorker: public Worker {
     RootMoves rootMoves;
 #endif
 
-    // 反復深化の探索深さと、最後に完了した深さ。
-    Depth rootDepth, completedDepth;
+    // 現在探索中、または最後に開始した反復深化の深さ。
+    Depth rootDepth;
     // 詰みを探すために一部の枝刈りを緩めるモード。
     bool seekMate = false;
 
@@ -590,7 +540,7 @@ class YaneuraOuWorker: public Worker {
 	// numaTotal     : NUMA内のtotal thread数。numaTotalThreads。
 	// 📑この3つはコンストラクタで渡されたもの
 
-	size_t                    threadIdx, numaThreadIdx, numaTotal;
+	usize                     threadIdx, numaThreadIdx, numaTotal;
     NumaReplicatedAccessToken numaAccessToken;
 #endif
 
@@ -600,7 +550,7 @@ class YaneuraOuWorker: public Worker {
 
     // The main thread has a SearchManager, the others have a nullptr
     // メインスレッドはSearchManagerを持ち、他のスレッドはnullptrを持つ。
-    std::unique_ptr<ISearchManager> manager;
+    std::unique_ptr<SearchManager> manager;
 
     // 📝 tablebaseは将棋では使わない。
     Tablebases::Config tbConfig;
@@ -609,7 +559,7 @@ class YaneuraOuWorker: public Worker {
     ThreadPool&                                     threads;
     TranspositionTable&                             tt;
 	// TODO : あとで考える。
-    //const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& networks;
+    //const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
 
 #endif
 
@@ -627,7 +577,7 @@ class YaneuraOuWorker: public Worker {
 	// TODO : あとでよく考える。
 
 	// NNUE評価関数のパラメーターがNumaごとにコピーされるようにする。
-	const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& networks;
+	const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
 
 	// Used by NNUE
 	// NNUEで使う
@@ -642,6 +592,10 @@ class YaneuraOuWorker: public Worker {
     friend class Stockfish::ThreadPool;
 #else
 	// 🌈 以下、やねうら王独自追加 🌈
+
+#if defined(EVAL_SFNN)
+    Eval::NNUE::AccumulatorStack accumulatorStack;
+#endif
 
 	// WorkerのポインタをYaneuraOuWorkerのポインタにupcastする。
     // 💡 このWorkerから派生させるようなclass設計だと必要になるので用意した。

@@ -3,7 +3,7 @@
 #include "../../config.h"
 #include "../../extra/tools.h"
 
-#if defined(EVAL_NNUE)
+#if (defined(EVAL_NNUE) || defined(EVAL_SFNN))
 
 #include <algorithm>
 #include <array>
@@ -24,10 +24,6 @@
 #include "../../memory.h"
 #include "../../usi.h"
 
-#if defined(USE_EVAL_HASH)
-#include "../evalhash.h"
-#endif
-
 #include "evaluate_nnue.h"
 #include "nnue_common.h"
 
@@ -39,24 +35,21 @@ extern int FV_SCALE;
 //              旧評価関数のためのヘルパー
 // ============================================================
 
-#if defined(USE_CLASSIC_EVAL)
+#if defined(USE_CLASSIC_EVAL) || defined(EVAL_SFNN)
 using namespace YaneuraOu;
-void add_options_(OptionsMap& options, ThreadPool& threads);
+void add_options_(OptionsMap& options);
 
 namespace {
 YaneuraOu::OptionsMap* options_ptr;
-YaneuraOu::ThreadPool* threads_ptr;
 }
 
-// 📌 旧Options、旧Threadsとの互換性のための共通のマクロ 📌
+// 📌 旧Optionsとの互換性のためのマクロ 📌
 #define Options (*options_ptr)
-#define Threads (*threads_ptr)
 
 namespace YaneuraOu::Eval {
-void add_options(OptionsMap& options, ThreadPool& threads) {
+void add_options(OptionsMap& options, ThreadPool&) {
     options_ptr = &options;
-    threads_ptr = &threads;
-    add_options_(options, threads);
+    add_options_(options);
 }
 }
 // ============================================================
@@ -66,7 +59,7 @@ bool        eval_loaded   = false;
 std::string last_eval_dir = "None";
 
 // 📌 この評価関数で追加したいエンジンオプションはここで追加する。
-void add_options_(OptionsMap& options, ThreadPool& threads) {
+void add_options_(OptionsMap& options) {
 
 #if defined(NNUE_EMBEDDING_OFF)
     const char* default_eval_dir = "eval";
@@ -99,7 +92,7 @@ void add_options_(OptionsMap& options, ThreadPool& threads) {
 #endif
 
     // NNUEのFV_SCALEの値
-    Options.add("FV_SCALE", Option(16, 1, 128, [&](const Option& o) {
+    Options.add("FV_SCALE", Option(16, 1, 128, [](const Option& o) {
                     YaneuraOu::Eval::NNUE::FV_SCALE = int(o);
                     return std::nullopt;
                 }));
@@ -158,15 +151,6 @@ namespace {
 		const unsigned int   size;
 	};
 
-	//EmbeddedNNUE get_embedded(EmbeddedNNUEType type) {
-	//	if (type == EmbeddedNNUEType::BIG)
-	//		return EmbeddedNNUE(gEmbeddedNNUEBigData, gEmbeddedNNUEBigEnd, gEmbeddedNNUEBigSize);
-	//	else
-	//		return EmbeddedNNUE(gEmbeddedNNUESmallData, gEmbeddedNNUESmallEnd, gEmbeddedNNUESmallSize);
-	//}
-
-	// ⇨  StockfishはNNUEとして大きなnetworkと小さなnetworkがある。
-
 	EmbeddedNNUE get_embedded() {
 #if defined(__EMSCRIPTEN__) && !defined(NNUE_EMBEDDING_OFF)
 		// embedded_nnue.cppは先頭ポインタとサイズしか提供しないので、終端はここで計算する。
@@ -186,7 +170,7 @@ namespace NNUE {
 
 	int FV_SCALE = 16; // 水匠5では24がベストらしいのでエンジンオプション"FV_SCALE"で変更可能にした。
 
-#if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
+#if defined(EVAL_SFNN) && NNUE_SFNN_PROGRESS_BUCKETS != 1
 namespace Progress {
 namespace {
 
@@ -281,8 +265,28 @@ int Parameters::BucketIndex(const Position& pos, int bucket_count) const {
 } // namespace Progress
 #endif
 
+#if defined(EVAL_SFNN) && defined(ENABLE_NUMA_NETWORK_REPLICATION)
+    std::unique_ptr<LazyNumaReplicatedSystemWide<NnueNetworks>> shared_networks;
+    namespace {
+    NumaReplicationContext* network_numa_context = nullptr;
+    }
+
+    void set_network_numa_context(NumaReplicationContext& context) {
+        assert(!network_numa_context || network_numa_context == &context);
+        network_numa_context = &context;
+    }
+
+    void release_network_numa_context(NumaReplicationContext& context) {
+        if (network_numa_context != &context)
+            return;
+        shared_networks.reset();
+        network_numa_context = nullptr;
+        eval_loaded = false;
+    }
+#else
     // NNUE評価関数パラメーター（共有メモリまたはローカルメモリ上に配置）
     SystemWideSharedConstant<NnueNetworks> shared_networks;
+#endif
 
     // 評価関数ファイル名
     const char* const kFileName = EvalFileDefaultName;
@@ -303,7 +307,7 @@ int Parameters::BucketIndex(const Position& pos, int bucket_count) const {
     std::string GetArchitectureString() {
         const std::string base = "Features=" + FeatureTransformer::GetStructureString() +
 			",Network=" + Network::GetStructureString();
-#if defined(SFNNwoPSQT)
+#if defined(EVAL_SFNN)
 		return "ModelType=SFNNWithoutPsqt;" + base + "{LayerStack=" + std::to_string(kLayerStacks) + "}";
 #else
 		return base;
@@ -339,7 +343,11 @@ namespace {
 	// 同じパラメータを持つ他プロセスが既に共有メモリを作成済みなら、そちらを参照する。
 	Tools::Result LoadAndShare(std::istream& stream, [[maybe_unused]] std::string* failed_file) {
 		// テンポラリ領域にパラメータを読み込む
-		auto tmp = make_unique_large_page<NnueNetworks>();
+#if defined(EVAL_SFNN) && defined(ENABLE_NUMA_NETWORK_REPLICATION)
+        auto tmp = std::make_unique<NnueNetworks>();
+#else
+        auto tmp = make_unique_aligned<NnueNetworks>();
+#endif
 
 		u32 hash_value;
 		std::string architecture;
@@ -372,7 +380,7 @@ namespace {
 			sync_cout << "info string NNUE feature params read failed: " << result.to_string() << sync_endl;
 			return result;
 		}
-#if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
+#if defined(EVAL_SFNN) && NNUE_SFNN_PROGRESS_BUCKETS != 1
 		const std::string eval_dir = Options["EvalDir"];
 		const auto progress_path = CommandLine::get_binary_directory() / path_from_utf8(eval_dir) / "progress.bin";
 		std::ifstream progress_stream(progress_path, std::ios::binary);
@@ -399,7 +407,13 @@ namespace {
 			return Tools::ResultCode::FileCloseError;
 
 		// 共有メモリに配置（同一ハッシュの共有メモリが既に存在すればそちらを参照）
-		shared_networks = SystemWideSharedConstant<NnueNetworks>(*tmp);
+#if defined(EVAL_SFNN) && defined(ENABLE_NUMA_NETWORK_REPLICATION)
+        assert(network_numa_context);
+        shared_networks = std::make_unique<LazyNumaReplicatedSystemWide<NnueNetworks>>(
+          *network_numa_context, std::move(tmp));
+#else
+        shared_networks = SystemWideSharedConstant<NnueNetworks>(*tmp);
+#endif
 
 		return Tools::ResultCode::Ok;
 	}
@@ -458,11 +472,11 @@ namespace {
     }
 
     // 差分計算ができるなら進める
-    static void UpdateAccumulatorIfPossible(const Position& pos) {
-        networks().feature_transformer.UpdateAccumulatorIfPossible(pos);
+    static void UpdateAccumulatorIfPossible(const Position& pos, AccumulatorState* state) {
+        networks().feature_transformer.UpdateAccumulatorIfPossible(pos, state);
     }
 
-#if defined(SFNNwoPSQT)
+#if defined(EVAL_SFNN)
     static_assert(NNUE_SFNN_HAND_BUCKETS == 1 || NNUE_SFNN_HAND_BUCKETS == 4
         || NNUE_SFNN_HAND_BUCKETS == 16 || NNUE_SFNN_HAND_BUCKETS == 64
         || NNUE_SFNN_HAND_BUCKETS == 256 || NNUE_SFNN_HAND_BUCKETS == 1024,
@@ -723,15 +737,15 @@ namespace {
             + hand1024_single_bucket(pos.hand_of(~stm));
     }
 
-    static int progress_bucket(const Position& pos) {
+    static int progress_bucket(const Position& pos, [[maybe_unused]] const NnueNetworks& network) {
 #if NNUE_SFNN_PROGRESS_BUCKETS == 1
         return 0;
 #else
-        return networks().progress.BucketIndex(pos, NNUE_SFNN_PROGRESS_BUCKETS);
+        return network.progress.BucketIndex(pos, NNUE_SFNN_PROGRESS_BUCKETS);
 #endif
     }
 
-    static int stack_index_for_nnue(const Position& pos) {
+    static int stack_index_for_nnue(const Position& pos, [[maybe_unused]] const NnueNetworks& network) {
 #if NNUE_SFNN_HAND_BUCKETS == 1 && NNUE_SFNN_KING_BUCKETS == 9 && NNUE_SFNN_KING_BUCKET_TYPE == NNUE_SFNN_KING_BUCKET_TYPE_K3K3 && NNUE_SFNN_PROGRESS_BUCKETS == 1
         return king3_by_king3_bucket(pos);
 #else
@@ -766,7 +780,7 @@ namespace {
 #endif
 
 #if NNUE_SFNN_PROGRESS_BUCKETS != 1
-        idx = idx * NNUE_SFNN_PROGRESS_BUCKETS + progress_bucket(pos);
+        idx = idx * NNUE_SFNN_PROGRESS_BUCKETS + progress_bucket(pos, network);
 #endif
 
         if (idx < 0) idx = 0;
@@ -777,34 +791,37 @@ namespace {
 #endif
 
     // 評価値を計算する
-    static Value ComputeScore(const Position& pos, bool refresh = false) {
-        auto& accumulator = pos.state()->accumulator;
+    static Value ComputeScore(const Position& pos, AccumulatorState* state, bool refresh = false,
+                              const NnueNetworks& network = networks()) {
+        auto& accumulator = accumulator_of(state);
+#if defined(EVAL_NNUE)
         if (!refresh && accumulator.computed_score) {
             return accumulator.score;
         }
+#endif
 
         alignas(kCacheLineSize) char buffer[Network::kBufferSize];
-#if defined(SFNNwoPSQT)
-        const auto bucket = stack_index_for_nnue(pos);
+#if defined(EVAL_SFNN)
+        const auto bucket = stack_index_for_nnue(pos, network);
 #if defined(USE_NEON) && defined(NNUE_HAS_SFNN_NEON_ACCUMULATOR_PROPAGATE)
-    networks().feature_transformer.EnsureAccumulator(pos, refresh);
-    const auto output = networks().network[bucket].PropagateNeonFromAccumulator(
-        accumulator.accumulation, pos.side_to_move(), buffer);
+        network.feature_transformer.EnsureAccumulator(pos, refresh, state);
+        const auto output = network.network[bucket].PropagateNeonFromAccumulator(
+            accumulator.accumulation, pos.side_to_move(), buffer);
 #elif defined(USE_AVX512) && defined(NNUE_HAS_SFNN_ACCUMULATOR_PROPAGATE)
-        networks().feature_transformer.EnsureAccumulator(pos, refresh);
-        const auto output = networks().network[bucket].PropagateFromAccumulator(
+        network.feature_transformer.EnsureAccumulator(pos, refresh, state);
+        const auto output = network.network[bucket].PropagateFromAccumulator(
             accumulator.accumulation, pos.side_to_move(), buffer);
 #else
         alignas(kCacheLineSize) TransformedFeatureType
             transformed_features[FeatureTransformer::kBufferSize];
-        networks().feature_transformer.Transform(pos, transformed_features, refresh);
-        const auto output = networks().network[bucket].Propagate(transformed_features, buffer);
+        network.feature_transformer.Transform(pos, transformed_features, refresh, state);
+        const auto output = network.network[bucket].Propagate(transformed_features, buffer);
 #endif
 #else
         alignas(kCacheLineSize) TransformedFeatureType
             transformed_features[FeatureTransformer::kBufferSize];
-        networks().feature_transformer.Transform(pos, transformed_features, refresh);
-        const auto output = networks().network[0].Propagate(transformed_features, buffer);
+        network.feature_transformer.Transform(pos, transformed_features, refresh, state);
+        const auto output = network.network[0].Propagate(transformed_features, buffer);
 #endif
 
         // VALUE_MAX_EVALより大きな値が返ってくるとaspiration searchがfail highして
@@ -830,66 +847,14 @@ namespace {
         // 2) accumulator.scoreは、差分計算の時に用いないので書き換えて問題ない。
         score = std::clamp(score, -VALUE_MAX_EVAL, VALUE_MAX_EVAL);
 
+#if defined(EVAL_NNUE)
         accumulator.score = score;
         accumulator.computed_score = true;
-        return accumulator.score;
+#endif
+        return score;
     }
 
 }  // namespace NNUE
-
-#if defined(USE_EVAL_HASH)
-
-// HashTableに評価値を保存するために利用するクラス
-struct alignas(16) ScoreKeyValue {
-#if defined(USE_SSE2)
-    ScoreKeyValue() = default;
-    ScoreKeyValue(const ScoreKeyValue & other) {
-        static_assert(sizeof(ScoreKeyValue) == sizeof(__m128i),
-            "sizeof(ScoreKeyValue) should be equal to sizeof(__m128i)");
-        _mm_store_si128(&as_m128i, other.as_m128i);
-    }
-    ScoreKeyValue& operator=(const ScoreKeyValue & other) {
-        _mm_store_si128(&as_m128i, other.as_m128i);
-        return *this;
-    }
-#endif
-
-    // evaluate hashでatomicに操作できる必要があるのでそのための操作子
-    void encode() {
-#if defined(USE_SSE2)
-        // ScoreKeyValue は atomic にコピーされるので key が合っていればデータも合っている。
-#else
-        key ^= score;
-#endif
-    }
-    // decode()はencode()の逆変換だが、xorなので逆変換も同じ変換。
-    void decode() { encode(); }
-
-    union {
-        struct {
-            std::uint64_t key;
-            std::uint64_t score;
-        };
-#if defined(USE_SSE2)
-        __m128i as_m128i;
-#endif
-    };
-};
-
-// evaluateしたものを保存しておくHashTable(俗にいうehash)
-
-struct EvaluateHashTable : HashTable<ScoreKeyValue> {};
-
-EvaluateHashTable g_evalTable;
-void EvalHash_Resize(size_t mbSize) { g_evalTable.resize(mbSize); }
-void EvalHash_Clear() { g_evalTable.clear(); };
-
-// prefetchする関数も用意しておく。
-void prefetch_evalhash(const u64 key) {
-    constexpr auto mask = ~((u64)0x1f);
-    prefetch((void*)((u64)g_evalTable[key] & mask));
-}
-#endif
 
 // 評価関数ファイルを読み込む
 void load_eval() {
@@ -967,52 +932,43 @@ void load_eval() {
 // 手番側から見た評価値を返すので注意。(他の評価関数とは設計がこの点において異なる)
 // なので、この関数の最適化は頑張らない。
 Value compute_eval(const Position& pos) {
-    return NNUE::ComputeScore(pos, true);
+#if defined(EVAL_SFNN)
+    NNUE::AccumulatorState state;
+    return NNUE::ComputeScore(pos, &state, true);
+#else
+    return NNUE::ComputeScore(pos, pos.state(), true);
+#endif
 }
 
 // 評価関数
 Value evaluate(const Position& pos) {
-    const auto& accumulator = pos.state()->accumulator;
-    if (accumulator.computed_score) {
-        return accumulator.score;
-    }
-
-#if defined(USE_GLOBAL_OPTIONS)
-    // GlobalOptionsでeval hashを用いない設定になっているなら
-    // eval hashへの照会をskipする。
-    if (!GlobalOptions.use_eval_hash) {
-        ASSERT_LV5(pos.state()->materialValue == Eval::material(pos));
-        return NNUE::ComputeScore(pos);
-    }
+#if defined(EVAL_SFNN)
+    // Standalone evaluation must not change a search worker's stack.
+    // 探索外の評価では、探索Workerのスタックを変更しない。
+    NNUE::AccumulatorState state;
+    return NNUE::ComputeScore(pos, &state);
+#else
+    return NNUE::ComputeScore(pos, pos.state());
 #endif
-
-#if defined(USE_EVAL_HASH)
-    // evaluate hash tableにはあるかも。
-    const HASH_KEY key = pos.state()->key();
-    ScoreKeyValue entry = *g_evalTable[key];
-    entry.decode();
-    if (entry.key == key) {
-        // あった！
-        return Value(entry.score);
-    }
-#endif
-
-    Value score = NNUE::ComputeScore(pos);
-#if defined(USE_EVAL_HASH)
-    // せっかく計算したのでevaluate hash tableに保存しておく。
-    entry.key = key;
-    entry.score = score;
-    entry.encode();
-    *g_evalTable[key] = entry;
-#endif
-
-    return score;
 }
+
+#if defined(EVAL_SFNN)
+Value evaluate(const Position& pos, NNUE::AccumulatorStack& stack) {
+    return NNUE::ComputeScore(pos, &stack.latest());
+}
+#if defined(ENABLE_NUMA_NETWORK_REPLICATION)
+Value evaluate(const Position& pos, NNUE::AccumulatorStack& stack, NumaReplicatedAccessToken token) {
+    return NNUE::ComputeScore(pos, &stack.latest(), false, NNUE::networks(token));
+}
+#endif
+#endif
 
 // 差分計算ができるなら進める
+#if defined(EVAL_NNUE)
 void evaluate_with_no_return(const Position& pos) {
-    NNUE::UpdateAccumulatorIfPossible(pos);
+    NNUE::UpdateAccumulatorIfPossible(pos, pos.state());
 }
+#endif
 
 // 現在の局面の評価値の内訳を表示する
 void print_eval_stat(Position& /*pos*/) {
@@ -1022,4 +978,4 @@ void print_eval_stat(Position& /*pos*/) {
 } // namespace Eval
 } // namespace YaneuraOu
 
-#endif  // defined(EVAL_NNUE)
+#endif  // (defined(EVAL_NNUE) || defined(EVAL_SFNN))

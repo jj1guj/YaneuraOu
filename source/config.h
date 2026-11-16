@@ -21,7 +21,7 @@
 // ただし、この値を数値として使用することがあるので数値化できる文字列にしておく必要がある。
 #if !defined(ENGINE_VERSION)
 
-#define ENGINE_VERSION "9.80git"
+#define ENGINE_VERSION "9.96git"
 
 #endif
 // USE_LAZY_EVALUATE: 未指定なら無効、-Dのみなら1（従来動作）。
@@ -229,7 +229,7 @@
 //  高速化に関する設定
 // ---------------------
 
-// トーナメント(大会)用のビルド。最新CPU(いまはAVX2)用でEVAL_HASH大きめ。TEST_CMD使用不可。ASSERTなし。
+// トーナメント(大会)用のビルド。最新CPU(いまはAVX2)用。TEST_CMD使用不可。ASSERTなし。
 // #define FOR_TOURNAMENT
 
 // ---------------------
@@ -337,12 +337,15 @@
 // ⚠ ビルドするときにsourceフォルダ直下に"nn.bin"を配置すること。
 // #define NNUE_EMBEDDING
 
+// SFNNの評価関数の重みをOSのNUMAノード別に複製する（既定では無効）。
+// L3単位など、同じOSノードに属する論理ノードでは共有メモリを再利用する。
+// #define ENABLE_NUMA_NETWORK_REPLICATION
+
 // このシンボルはStockfishの元のコードを示すのに用いる。
 // 定義してもビルドエラーになる。
 // #define STOCKFISH
 
-// SFNNwoPSQT型の評価関数を使うときに定義するシンボル。(Makefileのなかで定義している)
-// #define SFNNwoPSQT
+// SFNN_XXXはEVAL_SFNN、NNUE_XXXはEVAL_NNUEとして排他的に構成する。
 
 // ===============================================================
 // ここ以降では、↑↑↑で設定した内容に基づき必要なdefineを行う。
@@ -362,10 +365,12 @@ constexpr int MAX_PLY_NUM = 246;
 
 // --- 通常の思考エンジンとして実行ファイルを公開するとき用の設定集
 
-#if defined(YANEURAOU_ENGINE_KPPT) || defined(YANEURAOU_ENGINE_KPP_KKPT) || defined(YANEURAOU_ENGINE_NNUE) || defined(YANEURAOU_ENGINE_MATERIAL)
+#if defined(YANEURAOU_ENGINE_KPPT) || defined(YANEURAOU_ENGINE_KPP_KKPT) || defined(YANEURAOU_ENGINE_NNUE) || defined(YANEURAOU_ENGINE_MATERIAL) || defined(YANEURAOU_ENGINE_SFNN)
 
 	#define YANEURAOU_ENGINE
-	#define USE_CLASSIC_EVAL
+	#if !defined(YANEURAOU_ENGINE_SFNN)
+		#define USE_CLASSIC_EVAL
+	#endif
 	#define USE_PARTIAL_KEY
 	#define USE_MATERIAL_VALUE
 	#define USE_EVAL_LIST
@@ -378,11 +383,11 @@ constexpr int MAX_PLY_NUM = 246;
 	// 定跡関連コマンド
 	#define ENABLE_MAKEBOOK_CMD
 
-	#if defined(YANEURAOU_ENGINE_KPPT) || defined(YANEURAOU_ENGINE_KPP_KKPT) || defined(YANEURAOU_ENGINE_NNUE)
+	#if defined(YANEURAOU_ENGINE_KPPT) || defined(YANEURAOU_ENGINE_KPP_KKPT) || defined(YANEURAOU_ENGINE_NNUE) || defined(YANEURAOU_ENGINE_SFNN)
 		#define USE_DIFF_EVAL
 	#endif
 
-	#if defined(YANEURAOU_ENGINE_NNUE) && !defined(NNUE_EMBEDDING)
+	#if (defined(YANEURAOU_ENGINE_NNUE) || defined(YANEURAOU_ENGINE_SFNN)) && !defined(NNUE_EMBEDDING)
 		// 📝 Stockfishでは、NNUE_EMBEDDING_OFFを定義した時にのみ、
 		//    評価関数パラメーターをファイルから読みこむ機能が有効になる。
 		//    (定義しないとincbinを用いて埋め込まれているものを読み込む)
@@ -427,8 +432,12 @@ constexpr int MAX_PLY_NUM = 246;
 		#define EVAL_KPP_KKPT
 	#endif
 
-	#if defined(YANEURAOU_ENGINE_NNUE)
-		#define EVAL_NNUE
+	#if (defined(YANEURAOU_ENGINE_NNUE) || defined(YANEURAOU_ENGINE_SFNN))
+		#if defined(YANEURAOU_ENGINE_SFNN)
+			#define EVAL_SFNN
+		#else
+			#define EVAL_NNUE
+		#endif
 
 		// NNUEの使いたい評価関数アーキテクチャの選択
 		//
@@ -639,6 +648,10 @@ constexpr bool pretty_jp = false;
 	#endif
 #endif
 
+#if defined(EVAL_NNUE) && defined(EVAL_SFNN)
+#error EVAL_NNUE and EVAL_SFNN are mutually exclusive.
+#endif
+
 // 上位のCPUをターゲットとするなら、その下位CPUの命令はすべて使えるはずなので…。
 
 #if defined (USE_AVX512VNNI)
@@ -689,6 +702,8 @@ constexpr bool pretty_jp = false;
 	// hafeKPE9には利きが必要
 	#define LONG_EFFECT_LIBRARY
 	#define USE_BOARD_EFFECT_PREV
+#elif defined(EVAL_SFNN)
+	#define EVAL_TYPE_NAME "SFNN"
 #elif defined(EVAL_NNUE) // それ以外のNNUEなので標準NNUE halfKP256だと思われる。
 	#define EVAL_TYPE_NAME "NNUE"
 #elif defined(EVAL_DEEP)

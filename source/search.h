@@ -4,7 +4,7 @@
 #include <algorithm>
 //#include <cstdint>
 #include <cstring>
-//#include <vector>
+#include <vector>
 
 #include "config.h"
 
@@ -46,6 +46,12 @@ namespace Search {
 //  探索のときに使うPV
 // -----------------------
 
+// syzygy_extend_pv() may lead to PVs longer than MAX_PLY
+// ルートのPVはテーブルベースによる延長でMAX_PLYを超えることがある。
+struct RootPVMoves : public std::vector<Move> {
+    RootPVMoves() { reserve(MAX_PLY); }
+};
+
 struct PVMoves {
     Move        moves[MAX_PLY + 1];
     usize length = 0;
@@ -78,17 +84,82 @@ struct PVMoves {
         length = childPv ? childPv->length : 0;
 
         if (childPv)
-        {
             std::memcpy(moves + 1, childPv->moves, length * sizeof(Move));
-        }
 
         moves[0] = move;
         ++length;
     }
+
+    PVMoves& operator=(const RootPVMoves& rhs) {
+        length = std::min(rhs.size(), usize(MAX_PLY));
+        std::memcpy(moves, rhs.data(), length * sizeof(Move));
+        return *this;
+    }
 };
 
-// 💡 Stockfishのここにあった"struct Stack"は、
-//     engine/yaneuraou-engine/yaneuraou-search.h に移動させた。
+#if defined(YANEURAOU_ENGINE)
+// -----------------------
+//  探索のときに使うStack
+// -----------------------
+
+// Stack struct keeps track of the information we need to remember from nodes
+// shallower and deeper in the tree during the search. Each search thread has
+// its own array of Stack objects, indexed by the current ply.
+
+// Stack構造体は、検索中にツリーの浅いノードや深いノードから記憶する必要がある情報を管理します。
+// 各検索スレッドは、現在の深さ（ply）に基づいてインデックスされた、独自のStackオブジェクトの配列を持っています。
+
+struct Stack {
+    // PVへのポインター。
+    PVMoves* pv;
+
+    // historyのうち、counter moveに関するhistoryへのポインタ。実体はThreadが持っている。
+    PieceToHistory* continuationHistory;
+
+    // [pc][to]のペアに対する correction history。
+    CorrectionHistory<PieceTo>* continuationCorrectionHistory;
+
+    // rootからの手数。rootならば0。
+    int ply;
+
+    // そのスレッドの探索においてこの局面で現在選択されている指し手
+    Move currentMove;
+
+    // singular extension判定のときに置換表の指し手をそのnodeで除外して探索したいのでその除外する指し手
+    Move excludedMove;
+
+    // 評価関数を呼び出して得た値。NULL MOVEのときに親nodeでの評価値が欲しいので保存しておく。
+    Value staticEval;
+
+    // 一度計算したhistoryの合計値をcacheしておくのに用いる。
+    int statScore;
+
+    // このnodeでdo_move()した生成した何手目の指し手か。(1ならおそらく置換表の指し手だろう)
+    int moveCount;
+
+    // この局面で王手がかかっていたかのフラグ
+    bool inCheck;
+
+    // 置換表にPV nodeで調べた値が格納されていたか(これは価値が高い)
+    bool ttPv;
+
+    // 置換表にhitしたかのフラグ
+    bool ttHit;
+
+    // 前回の反復深化で得たPVを辿っているnodeか。
+    // Stockfishでは、このPV line上では一部の浅い枝刈りを抑制する。
+    bool followPV;
+
+    // cut off(betaを超えたので枝刈りとしてreturn)した回数。
+    int cutoffCnt;
+
+    // このnodeでのreductionの量
+    int reduction;
+
+    // 同一ノードでこれまでにNMPがfail highした回数。
+    int priorNMPFailHigh;
+};
+#endif // defined(YANEURAOU_ENGINE)
 
 
 // RootMove struct is used for moves at the root of the tree. For each root move
@@ -125,16 +196,16 @@ struct RootMove
 	// std::count(),std::find()などで指し手と比較するときに必要。
 	bool operator==(const Move& m) const { return pv[0] == m; }
 
+    // Sort in descending order
 	// sortするときに必要。std::stable_sort()で降順になって欲しいので比較の不等号を逆にしておく。
 	// 同じ値のときは、previousScoreも調べる。
 	bool operator<(const RootMove& m) const {
-		return m.score != score ? m.score < score
-								: m.previousScore < previousScore;
+        return m.score != score ? m.score < score : m.previousScore < previousScore;
 	}
 
 	// この指し手のためにどれだけのnodeを探索したか。
 	// 💡 反復深化がもう1回回りそうかの判定に用いる。
-    uint64_t effort        = 0;
+    u64 effort             = 0;
 
 	// 今回の(反復深化の)iterationでの探索結果のスコア
 	Value score			   = -VALUE_INFINITE;
@@ -142,9 +213,6 @@ struct RootMove
 	// 前回の(反復深化の)iterationでの探索結果のスコア
 	// 次のiteration時の探索窓の範囲を決めるときに使う。
 	Value previousScore    = -VALUE_INFINITE;
-
-    // 前回の評価値が確定値であるか。MultiPVの途中停止時の復元に用いる。
-    bool previousScoreExact = false;
 
 	// aspiration searchの時に用いる。previousScoreの移動平均。
 	Value averageScore	   = -VALUE_INFINITE;
@@ -163,6 +231,9 @@ struct RootMove
 	// スコアが上界のみの未確定値であるか。
 	bool inexactUpper      = false;
 
+    // 前回の評価値が確定値であるか。MultiPVの途中停止時の復元に用いる。
+    bool previousScoreExact = false;
+
 	// このスレッドがrootから最大、何手目まで探索したか(選択深さの最大)
 	int selDepth           = 0;
 
@@ -173,9 +244,9 @@ struct RootMove
 #endif
 
 	// この指し手で進めたときのpv
-	PVMoves pv;
+	RootPVMoves pv;
     // 前回の反復で得たPV。previousScoreと組にして保存する。
-    PVMoves previousPV;
+    RootPVMoves previousPV;
 };
 
 using RootMoves = std::vector<RootMove>;
@@ -249,7 +320,7 @@ struct LimitsType {
     // 今回のgoコマンドでの指定されていた"nodes"(探索ノード数)の値。
     // これは、USIプロトコルで規定されているものの将棋所では送ってこない。ShogiGUIはたぶん送ってくる。
     // goコマンドで"nodes"が指定されていない場合は、"エンジンオプションの"NodesLimit"の値。
-    uint64_t nodes;
+    u64 nodes;
 
     // "go"コマンドに"ponder"が付随していたかのフラグ。
     // 💡 ponder探索中であるかのフラグは、別途SearchManager::ponderが持っている。
@@ -282,19 +353,26 @@ struct LimitsType {
 // UCI側が保持するオプション、スレッドプール、置換表などを
 // Search::Workerへまとめて渡すための構造体。
 // やねうら王ではUSIとEngineの構成に合わせて共通データを渡す。
+// The UCI stores the uci options, thread pool, and transposition table.
+// This struct is used to easily forward data to the Search::Worker class.
+// UCIはオプション・スレッドプール・置換表を保持し、
+// この構造体はそれらをSearch::Workerへまとめて渡すために用いる。
 struct SharedState {
     SharedState(const OptionsMap&                                         optionsMap,
                 ThreadPool&                                               threadPool,
                 TranspositionTable&                                       transpositionTable,
                 std::map<NumaIndex, SharedHistories>&                     sharedHists
-				// TODO : あとで考える。
-				//,const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& nets
+#if STOCKFISH
+                , const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& net
+#endif
 	) :
         options(optionsMap),
         threads(threadPool),
         tt(transpositionTable),
         sharedHistories(sharedHists)
-        //, networks(nets)
+#if STOCKFISH
+        , network(net)
+#endif
 	{}
 
     const OptionsMap&                                         options;
@@ -302,7 +380,9 @@ struct SharedState {
     TranspositionTable&                                       tt;
     std::map<NumaIndex, SharedHistories>&                     sharedHistories;
 
-	//const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& networks;
+#if STOCKFISH
+	const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
+#endif
 };
 
 /*
@@ -347,6 +427,7 @@ struct InfoFull: InfoShort {
     usize nodes;
 
     // NPS
+    // 1秒当たりの探索ノード数。
     usize nps;
 
 #if STOCKFISH
@@ -375,9 +456,7 @@ struct InfoIteration {
 
 // 📌 読み筋を出力する時に呼び出すlistener
 // 🤔 StockfishではSearchManagerで定義されているが、
-//     やねうら王ではSearchManagerを採用しないので、namespace Searchで定義しておく。
-// 📝 UpdateInfoは、"info string ..."にそのまま出力する。
-//    やねうら王独自拡張。
+//     やねうら王では各探索エンジンで共用するため、namespace Searchで定義しておく。
 
 // Infoを更新した時のcallback。このcallbackを行うと標準出力に出力する。
 using UpdateShort    = std::function<void(const InfoShort&)>;
@@ -385,7 +464,11 @@ using UpdateFull     = std::function<void(const InfoFull&)>;
 using UpdateIter     = std::function<void(const InfoIteration&)>;
 using UpdateBestmove = std::function<void(std::string_view, std::string_view)>;
 using UpdateStart    = std::function<void()>;
+#if !STOCKFISH
+// 📝 UpdateInfoは、"info string ..."にそのまま出力する。
+//    やねうら王独自拡張。
 using UpdateInfo     = std::function<void(std::string_view)>;
+#endif
 
 // 読み筋を出力するための関数を呼び出すlistener
 struct UpdateContext {
@@ -393,8 +476,10 @@ struct UpdateContext {
     UpdateFull     onUpdateFull;     // PVを出力する時に用いる。
     UpdateIter     onIter;           // 反復深化で現在探索中の指し手。
     UpdateBestmove onBestmove;       // bestmoveを出力する時に用いる。
-    UpdateStart    onStart = []() {}; // メインワーカーが探索を開始する時に呼ぶ。
+    UpdateStart    onStart;         // メインワーカーが探索を開始する時に呼ぶ。
+#if !STOCKFISH
     UpdateInfo     onUpdateString;   // "info string "でそのまま出力する。
+#endif
 };
 
 // Search::Worker is the class that does the actual search.
@@ -424,11 +509,11 @@ public:
 
 	Worker(SharedState& sharedState,
 #if STOCKFISH
-	,std::unique_ptr<ISearchManager> sm,
+	std::unique_ptr<SearchManager> sm,
 	usize threadIdx,
 	usize numaThreadIdx,
 	usize numaTotal,
-	NumaReplicatedAccessToken numaAccessToken)
+	NumaReplicatedAccessToken numaAccessToken
 #else
           // 🌈 上記の4つの引数を一纏めにした構造体
           const ThreadIds& ids
@@ -479,15 +564,16 @@ public:
 	// 📝 やねうら王では、以下は、派生class(YaneuraOuWorker)側で実装する。
 #if STOCKFISH
     // Public because they need to be updatable by the stats
+    // 統計更新処理から更新できるように、publicにする。
     ButterflyHistory mainHistory;
     LowPlyHistory    lowPlyHistory;
 
     CapturePieceToHistory           captureHistory;
-    ContinuationHistory             continuationHistory[2][2];
     CorrectionHistory<Continuation> continuationCorrectionHistory;
 
     TTMoveHistory    ttMoveHistory;
     SharedHistories& sharedHistory;
+    ContinuationHistory (&continuationHistory)[2][2];
 #endif
 
 protected:
@@ -499,30 +585,38 @@ protected:
 #if STOCKFISH
     //bool iterative_deepening();
 
-	void do_move(Position& pos, const Move move, StateInfo& st);
-	void do_move(Position& pos, const Move move, StateInfo& st, const bool givesCheck);
-	void do_null_move(Position& pos, StateInfo& st);
+    void do_move(Position&    pos,
+                 const Move   move,
+                 StateInfo&   st,
+                 const bool   givesCheck,
+                 const bool   capture,
+                 Stack* const ss);
+    void do_null_move(Position& pos, StateInfo& st, Stack* const ss);
 	void undo_move(Position& pos, const Move move);
 	void undo_null_move(Position& pos);
 
     // This is the main search function, for both PV and non-PV nodes
+    // PVノードと非PVノードの両方で使うメインの探索関数。
     template<NodeType nodeType>
-    Value search(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, bool cutNode);
+    Value
+    search(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, const bool cutNode);
 
     // Quiescence search function, which is called by the main search
+    // メイン探索から呼び出される静止探索関数。
     template<NodeType nodeType>
     Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta);
 
-    Depth reduction(bool i, Depth d, int mn, int delta) const;
+    int reduction(bool i, Depth d, int mn) const;
 
     // Pointer to the search manager, only allowed to be called by the main thread
+    // 探索マネージャーへのポインターを返す。メインスレッドからのみ呼び出せる。
     SearchManager* main_manager() const {
         assert(threadIdx == 0);
-        return static_cast<SearchManager*>(manager.get());
+        assert(manager.get() != nullptr);
+        return manager.get();
     }
 
     TimePoint elapsed() const;
-    TimePoint elapsed_time() const;
 
     // Evaluate the current position of the game tree, from the point of view of
     // the side to move.
@@ -566,7 +660,7 @@ protected:
 	// 📝 派生class側で
 #if STOCKFISH
     // 探索した深さ。
-    //Depth rootDepth, completedDepth;
+    //Depth rootDepth;
 
     // aspiration searchのroot delta
     //Value rootDelta;
@@ -582,8 +676,8 @@ protected:
     NumaReplicatedAccessToken numaAccessToken;
 
 	// 📝 派生class側で
-    //// The main thread has a SearchManager, the others have a NullSearchManager
-    //std::unique_ptr<ISearchManager> manager;
+    //// The main thread has a SearchManager, the others have a nullptr
+    //std::unique_ptr<SearchManager> manager;
 
 	// 📝 tablebaseは将棋では使わない。
     //Tablebases::Config tbConfig;
@@ -599,12 +693,15 @@ protected:
 	// 置換表
     TranspositionTable& tt;
 
-#if defined(EVAL_SFNN)
-	// TODO : あとで検討する
-
-	const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& networks;
+    // やねうら王では、評価パラメーターはEval::NNUE::shared_networksで管理する。
+    // SFNNのaccumulatorStackは派生クラスYaneuraOuWorkerが保持する。
+    // refreshTableに相当するFinnyキャッシュはFeatureTransformer内のthread_local変数で保持する。
+    // SFNNのNUMA別複製はENABLE_NUMA_NETWORK_REPLICATIONを定義したときだけ有効になる。
+#if STOCKFISH
+	const LazyNumaReplicatedSystemWide<Eval::NNUE::Network>& network;
 
     // Used by NNUE
+    // NNUEで使用する。
     Eval::NNUE::AccumulatorStack  accumulatorStack;
     Eval::NNUE::AccumulatorCaches refreshTable;
 #endif

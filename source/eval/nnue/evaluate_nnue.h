@@ -7,15 +7,18 @@
 #include "../../config.h"
 #include "../../extra/tools.h"
 
-#if defined(EVAL_NNUE)
+#if (defined(EVAL_NNUE) || defined(EVAL_SFNN))
 
 #include "nnue_feature_transformer.h"
 #include "nnue_architecture.h"
 #include "../../misc.h"
 #include "../../memory.h"
 #include "../../shm.h"
+#if defined(EVAL_SFNN) && defined(ENABLE_NUMA_NETWORK_REPLICATION)
+#include "../../numa.h"
+#endif
 
-#if defined(SFNNwoPSQT)
+#if defined(EVAL_SFNN)
 #define NNUE_SFNN_KING_BUCKET_TYPE_NONE 0
 #define NNUE_SFNN_KING_BUCKET_TYPE_K3K3 1
 #define NNUE_SFNN_KING_BUCKET_TYPE_K9K9 2
@@ -81,7 +84,7 @@ class Position;
 namespace Eval::NNUE {
 
 #if defined(ENABLE_SFNN_16BIT_WEIGHT)
-#if !defined(SFNNwoPSQT)
+#if !defined(EVAL_SFNN)
 #error ENABLE_SFNN_16BIT_WEIGHT requires an SFNN architecture
 #endif
 	#define EvalFileDefaultName "nn16.bin"
@@ -89,7 +92,7 @@ namespace Eval::NNUE {
 	#define EvalFileDefaultName "nn.bin"
 #endif
 
-#if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
+#if defined(EVAL_SFNN) && NNUE_SFNN_PROGRESS_BUCKETS != 1
 namespace Progress {
 
 	// SFNNのLayerStack選択に使う進行度計算パラメーター。
@@ -110,7 +113,7 @@ namespace Progress {
 
 	// Hash value of evaluation function structure
 	// 評価関数の構造のハッシュ値
-#if defined(SFNNwoPSQT)
+#if defined(EVAL_SFNN)
 	constexpr u32 kSfnnBaseHashValue = 0x3c203b32u;
 	constexpr u32 kHashValue = kSfnnBaseHashValue;
 	constexpr int kLayerStacks = LayerStacks;
@@ -125,7 +128,7 @@ namespace Progress {
 	// プロセス間共有メモリに直接配置できる。
 	struct NnueNetworks {
 		FeatureTransformer feature_transformer;
-#if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
+#if defined(EVAL_SFNN) && NNUE_SFNN_PROGRESS_BUCKETS != 1
 		Progress::Parameters progress;
 #endif
 		Network network[kLayerStacks];
@@ -133,12 +136,26 @@ namespace Progress {
 	static_assert(std::is_trivially_copyable_v<NnueNetworks>,
 		"NnueNetworks must be trivially copyable for shared memory support");
 
-	// NNUE評価関数パラメーター（共有メモリまたはローカルメモリ上に配置）
-	extern SystemWideSharedConstant<NnueNetworks> shared_networks;
+#if defined(EVAL_SFNN) && defined(ENABLE_NUMA_NETWORK_REPLICATION)
+    extern std::unique_ptr<LazyNumaReplicatedSystemWide<NnueNetworks>> shared_networks;
 
-	// 共有メモリ上のNnueNetworksへのconst参照を返すヘルパー。
-	// 評価関数の呼び出しで毎回使われるので、インライン化する。
-	inline const NnueNetworks& networks() { return *shared_networks; }
+    // The single YaneuraOu engine owns the context; release replicas before it is destroyed.
+    // NUMAコンテキストは単一のYaneuraOuエンジンが持つ。破棄前に複製を解放する。
+    void set_network_numa_context(NumaReplicationContext& context);
+    void release_network_numa_context(NumaReplicationContext& context);
+
+    inline const NnueNetworks& networks(NumaReplicatedAccessToken token) {
+        return (*shared_networks)[token];
+    }
+    inline const NnueNetworks& networks() { return **shared_networks; }
+#else
+    // NNUE評価関数パラメーター（共有メモリまたはローカルメモリ上に配置）
+    extern SystemWideSharedConstant<NnueNetworks> shared_networks;
+
+    // 共有メモリ上のNnueNetworksへのconst参照を返すヘルパー。
+    // 評価関数の呼び出しで毎回使われるので、インライン化する。
+    inline const NnueNetworks& networks() { return *shared_networks; }
+#endif
 
 	// 評価関数ファイル名
 	extern const char* const kFileName;
@@ -174,6 +191,6 @@ struct std::hash<YaneuraOu::Eval::NNUE::NnueNetworks> {
 	}
 };
 
-#endif  // defined(EVAL_NNUE)
+#endif  // (defined(EVAL_NNUE) || defined(EVAL_SFNN))
 
 #endif // #ifndef NNUE_EVALUATE_NNUE_H_INCLUDED

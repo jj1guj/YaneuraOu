@@ -90,6 +90,10 @@ void Engine::add_base_options() {
 
     options.add(  //
       "NumaPolicy", Option("auto", [this](const Option& o) {
+          // 注意: Stockfish def601ccにも残る挙動を維持している。
+          // 不正値を拒否しても、Option::currentValueは元に戻らない。
+          // NUMA構成自体は維持されるが、後のThreadPool::set()はその不正な文字列を読み、
+          // none/auto以外としてバインドを有効にする場合がある。上流の修正時に見直す。
           if (!set_numa_config_from_option(o))
               return "NumaPolicy: invalid value '" + std::string(o) + "', keeping previous config.";
           return numa_config_information_as_string() + "\n"
@@ -143,7 +147,9 @@ void Engine::add_options() {
     options.add(  //
       // 📝 やねうら王では default threadを4に変更する。
       //     過去にdefault設定のまま対局させて「やねうら王弱い」という人がいたため。
-      "Threads", Option(4, 1, MaxThreads, [this](const Option&) {
+      "Threads", Option(4, 1, MaxThreads, [this](const Option&) -> std::optional<std::string> {
+          if (deferResourceOptions)
+              return std::nullopt;
           resize_threads();
           return thread_allocation_information_as_string();
       }));
@@ -174,26 +180,32 @@ void Engine::add_options() {
 
 // NumaConfig(numaContextのこと)を Options["NumaPolicy"]の値 から設定する。
 bool Engine::set_numa_config_from_option(const std::string& o) {
-	if (o == "auto" || o == "system")
-	{
-		numaContext.set_numa_config(NumaConfig::from_system(DefaultNumaPolicy));
-	}
-	else if (o == "hardware")
-	{
-		// Don't respect affinity set in the system.
-		numaContext.set_numa_config(NumaConfig::from_system(DefaultNumaPolicy, false));
-	}
-	else if (o == "none")
-	{
-		numaContext.set_numa_config(NumaConfig{});
-	}
+    // 遅延反映を使うエンジンでは、検証済みのNUMA構成をisready()まで保持する。
+    auto set_config = [this](NumaConfig&& config) {
+        if (deferResourceOptions)
+            pendingNumaConfig = std::move(config);
+        else
+            numaContext.set_numa_config(std::move(config));
+    };
+
+    if (o == "auto" || o == "system")
+        set_config(NumaConfig::from_system(DefaultNumaPolicy));
+    else if (o == "hardware")
+        // Don't respect affinity set in the system.
+        // システムで設定されたアフィニティーを考慮しない。
+        set_config(NumaConfig::from_system(DefaultNumaPolicy, false));
+    else if (o == "none")
+        set_config(NumaConfig{});
 	else
 	{
         auto parsed = NumaConfig::from_string(o);
         if (!parsed.has_value())
             return false;
-        numaContext.set_numa_config(std::move(*parsed));
+        set_config(std::move(*parsed));
 	}
+
+    if (deferResourceOptions)
+        return true;
 
 	// Force reallocation of threads in case affinities need to change.
 	resize_threads();

@@ -829,6 +829,9 @@ class NumaConfig {
         NumaIndex n = 0;
         for (auto&& nodeStr : split(s, ":"))
         {
+            // 注意: Stockfish def601ccと同様、数値化できない部分は下のヘルパーが読み捨てる。
+            // そのため、例えば0-15:16-31xは拒否されず、0-15だけの構成として採用される。
+            // 入力全体の妥当性を保証する処理ではない。上流の修正時に見直す。
             auto indices = indices_from_shortened_string(std::string(nodeStr));
             if (!indices.empty())
             {
@@ -1671,7 +1674,7 @@ class NumaReplicated: public NumaReplicatedBase {
 
 
 		実際の使い方。
-				const LazyNumaReplicated<Eval::Evaluator>& networks;
+				const LazyNumaReplicated<Eval::Evaluator>& network;
 		のように評価関数をLazyNumaReplicatedでくるむ。
 
 		以下のようなコードで、実際にnumaにアクセスする。まだ複製が完了していないnumaであれば、
@@ -1680,7 +1683,7 @@ class NumaReplicated: public NumaReplicatedBase {
 			void Search::Worker::ensure_network_replicated() {
 				// Access once to force lazy initialization.
 				// We do this because we want to avoid initialization during search.
-				(void) (networks[numaAccessToken]);
+				(void) (network[numaAccessToken]);
 			}
 
 */

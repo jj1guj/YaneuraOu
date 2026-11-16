@@ -126,7 +126,7 @@ void USIEngine::set_engine(IEngine& _engine) {
     //     期待するコードになっているので呼び出して初期化してやる。
     //     また、その時にエンジンオプションを追加する。
 
-#if defined(USE_CLASSIC_EVAL)
+#if defined(USE_CLASSIC_EVAL) || defined(EVAL_SFNN)
     Eval::add_options(engine.get_options(), engine.get_threads());
 #endif
 
@@ -234,7 +234,7 @@ void USIEngine::loop()
 	// yaneuraOu.wasm
 	// ここでループしてしまうと、ブラウザのメインスレッドがブロックされてしまう。
 #endif
-#endif
+#endif // diff:ignore
 } // diff:ignore
 
 // USIEngine::loop()の下請け。
@@ -284,6 +284,7 @@ bool USIEngine::usi_cmdexec(const std::string& cmd) { // diff:ignore
         // Stochastic Ponder中にhitした。
         if (stochastic_ponder_rewound)
         {
+            const TimePoint ponderhitTime = now();
 			// 思考をいったん停止。このときbestmoveを出力されると困るので抑制してから。
             auto on_bestmove = engine.get_on_bestmove();
             engine.set_on_bestmove([](auto,auto) {});
@@ -301,8 +302,9 @@ bool USIEngine::usi_cmdexec(const std::string& cmd) { // diff:ignore
 			std::istringstream iss2(last_go_cmd_string);
             iss2 >> token; // 先頭の"go"を捨てる。
             // ponderの位置に依存せず制限を読み直し、通常探索として再開する。
-            // parse_limits()で開始時刻も今回のponderhit時刻へ更新する。
+            // 開始時刻は処理冒頭で保存したponderhit時刻とし、探索停止待ちや局面復元の時間も含める。
             auto limits = parse_limits(iss2);
+            limits.startTime  = ponderhitTime;
             limits.ponderMode = false;
             engine.go(limits);
 		}

@@ -87,8 +87,10 @@ sparse input features
 
 SFNNは通常NNUEと同じくFeatureTransformerとaccumulatorを使うが、変換後特徴量と
 後段networkが通常NNUEと異なる。
+SFNNの累積値と着手の差分は探索Workerの`AccumulatorStack`で管理し、
+従来NNUEは`StateInfo`で管理する。`EVAL_SFNN`と`EVAL_NNUE`は排他的に定義する。
 
-`SFNN_*`でビルドすると`SFNNwoPSQT`が定義され、FeatureTransformerでは
+`SFNN_*`でビルドすると`EVAL_SFNN`が定義され、FeatureTransformerでは
 `USE_ELEMENT_WISE_MULTIPLY`が有効になる。この経路では、2視点分のaccumulatorを
 element-wise multiplyで混ぜて、最終的に`FT`次元の変換後特徴量を後段に渡す。
 そのため、SFNNのarchitecture名は`1024_7_64`のようになり、通常NNUEの
@@ -118,7 +120,7 @@ H1 が 8n    : shortcutなし。fc_0出力は H1。
 
 例えば`SFNN_halfka2_1024_7_64_k3k3`は`7`個のhidden出力と`1`個のshortcut出力を持つ。
 一方、`SFNN_halfka2_1024_8_64_k3k3`は`8`個のhidden出力だけを持ち、shortcutは使わない。
-`SFNNwoPSQT`という古い名前が残っている箇所があるが、shortcutの有無はこの`H1`規則で決まる。
+shortcutの有無はこの`H1`規則で決まる。
 
 SFNNでは`LayerStacks`個の後段networkを`nn.bin`に持ち、局面ごとに1つを選んで使う。
 例えば`k3k3`なら9個、`k21k21`なら441個、`k29k29`なら841個、`hand64_k3k3`なら576個、
@@ -208,7 +210,7 @@ little-endianで保存する。`progress.bin`のような外部ファイルは�
 囲む。
 
 ```cpp
-#if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
+#if defined(EVAL_SFNN) && NNUE_SFNN_PROGRESS_BUCKETS != 1
 ```
 
 特に`StateInfo`に進行度計算キャッシュを追加する場合、progressを使わないarchitectureで
@@ -218,7 +220,7 @@ little-endianで保存する。`progress.bin`のような外部ファイルは�
 そのため、`position.h`側のprogress cacheも次のようにprogress有効時だけ定義する。
 
 ```cpp
-#if defined(SFNNwoPSQT) && defined(NNUE_SFNN_PROGRESS_BUCKETS) && NNUE_SFNN_PROGRESS_BUCKETS != 1
+#if defined(EVAL_SFNN) && defined(NNUE_SFNN_PROGRESS_BUCKETS) && NNUE_SFNN_PROGRESS_BUCKETS != 1
     Key nnue_progress_key;
     int64_t nnue_progress_sum;
     Square nnue_progress_sq_bk;
@@ -855,3 +857,26 @@ dummy `nn.bin`の生成処理は`source/eval/nnue/architectures/nnue_dummy_gen.p
 
 新しい入力特徴量やLayerStack方式を追加するときは、生成器、探索時bucket計算、
 学習器側のbucket計算を同時に更新すること。
+
+## SFNNのNUMAノード別重み複製（任意）
+
+`EXTRA_CPPFLAGS`に`-DENABLE_NUMA_NETWORK_REPLICATION`を追加すると、SFNNの重みを
+Stockfishと同じ`LazyNumaReplicatedSystemWide`でNUMAノード別に配置する。
+既定では無効で、従来の全スレッド共通の重みを使用する。
+
+```sh
+make -j tournament COMPILER=clang++ \
+  YANEURAOU_EDITION=YANEURAOU_ENGINE_SFNN_halfkahm2_2304_15_64_k9k9_progress8 \
+  TARGET_CPU=AVX512VNNI \
+  EXTRA_CPPFLAGS='-DUSE_LAZY_EVALUATE=4 -DUSE_FINNY_TABLES -DUSE_FINNY_RESET -DNNUE_FT_SPARSE8 -DENABLE_NUMA_NETWORK_REPLICATION'
+```
+
+`NumaPolicy`は従来どおり指定する。`auto`では必要に応じてバインドし、`none`では
+全Workerがノード0の重みを参照する。明示的なCPU割り当ても使用できる。
+FT、後段の全LayerStack、進行度パラメーターをまとめて複製し、探索前に
+各Workerが参照する複製を準備する。NUMA設定変更時には複製も作り直す。
+
+共有メモリはOSの物理NUMAノードを識別して使い分ける。同じOSノード内を
+L3や手動設定で分割した論理ノードでは、重みの実体を共有できる。
+実際に複数の物理ノードへ配置する場合は、その分のメモリを消費する。
+1物理ノードのPCでは、ノード間メモリアクセスを減らす効果は検証できない。
